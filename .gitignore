@@ -1,0 +1,53 @@
+# Maven build output
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/.develocity/
+.omo
+.idea
+docs
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Eclipse
+.project
+.classpath
+.settings/
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs and runtime artifacts
+*.log
+*.pid
+
+# Agent runtime scratch / workspace outputs
+.opencode/
+.omo/
+.codebase-memory/
+
+# Sensitive / keys / credentials
+auth.json
+*.asc
+*.key
+*.pem

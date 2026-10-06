@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.x4rm.opencode4j</groupId>
+        <artifactId>opencode4j</artifactId>
+        <version>0.1.0-alpha.1</version>
+    </parent>
+
+    <artifactId>opencode4j-guice</artifactId>
+    <packaging>jar</packaging>
+
+    <name>opencode4j-guice</name>
+    <description>Optional Google Guice dependency injection bindings for opencode4j.</description>
+    <url>https://github.com/opencode4j/opencode4j</url>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.x4rm.opencode4j</groupId>
+            <artifactId>opencode4j-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.x4rm.opencode4j</groupId>
+            <artifactId>opencode4j-agent</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.inject</groupId>
+            <artifactId>guice</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
