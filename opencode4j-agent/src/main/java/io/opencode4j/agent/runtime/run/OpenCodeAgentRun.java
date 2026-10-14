@@ -101,11 +101,13 @@ public final class OpenCodeAgentRun implements AgentRun {
                     processEvent(event);
                 }
             }
-        } catch (IOException | RuntimeException e) {
+        } catch (IOException | RuntimeException | Error e) {
+            // Errors (for example a LinkageError from a dependency clash) must also end the run: if the thread
+            // died without completing the future, await() would block forever.
             synchronized (stateLock) {
                 if (!terminal) {
                     log.error("Run loop failed on runId {}: {}", runId, e.getMessage(), e);
-                    finish(ExecutionOutcome.FAILED, "Event stream failure: " + e.getMessage());
+                    finish(ExecutionOutcome.FAILED, "Event stream failure: " + e);
                 }
             }
         } finally {
@@ -158,7 +160,7 @@ public final class OpenCodeAgentRun implements AgentRun {
             String reason = detail != null ? detail
                     : outcome == ExecutionOutcome.INTERRUPTED ? "Cancelled or interrupted" : "Execution failed";
             val text = eventProcessor.text();
-            val result = eventProcessor.result(success, reason, spec.steps(),
+            val result = eventProcessor.result(success, reason, spec.effectiveSteps(),
                     success && jvmMcpServer != null ? jvmMcpServer.submittedResult() : null);
             long now = System.currentTimeMillis();
             eventProcessor.emit(switch (outcome) {

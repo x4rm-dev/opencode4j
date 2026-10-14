@@ -91,6 +91,24 @@ class OpenCodeAgentRunTest {
     }
 
     @Test
+    void anErrorInTheRunLoopFailsTheRunInsteadOfLeavingAwaitBlockedForever() throws Exception {
+        configure(text("root", "hello") + event("session.execution.succeeded", "\"sessionID\":\"root\""),
+                false, false);
+        AgentEventListener linkageFailure = e -> {
+            if (e instanceof TextDeltaEvent) {
+                throw new NoSuchMethodError("simulated dependency clash");
+            }
+        };
+        var run = run(AgentSpec.builder("boss").build(), linkageFailure);
+
+        run.start();
+        var result = run.result().get(3, TimeUnit.SECONDS);
+
+        assertFalse(result.isSuccess());
+        assertTrue(result.errorMessage().contains("simulated dependency clash"));
+    }
+
+    @Test
     void childStepsDoNotTruncateRootAndToolIdsAreScopedToSessions() throws Exception {
         String stream = event("session.created", "\"sessionID\":\"child\",\"parentID\":\"root\",\"title\":\"worker\"")
                 + toolStarted("root", "same", "execute")
