@@ -9,12 +9,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opencode4j.runtime.spec.AgentSpec;
 import io.opencode4j.runtime.spec.McpToolSpec;
 import io.opencode4j.runtime.spec.PermissionRule;
+import io.opencode4j.runtime.spec.RunLimits;
+import io.opencode4j.runtime.spec.ProviderSpec;
 import io.opencode4j.runtime.spec.SkillSpec;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -118,12 +121,11 @@ class WorkspaceWriterTest {
         assertEquals(15, agentsNode.path("boss").path("steps").asInt());
 
         // Permissions on boss
-        JsonNode perms = agentsNode.path("boss").path("permissions");
+        JsonNode perms = agentsNode.path("boss").path("permission");
         assertEquals(2, perms.size());
-        assertEquals("*", perms.get(0).path("action").asText());
-        assertEquals("deny", perms.get(0).path("effect").asText());
-        assertEquals("skill", perms.get(1).path("action").asText());
-        assertEquals("allow", perms.get(1).path("effect").asText());
+        assertEquals("deny", perms.path("*").asText());
+        assertEquals("allow", perms.path("skill").path("launch-protocol").asText());
+        assertFalse(agentsNode.path("boss").has("permissions"));
 
         // MCP servers in v2-native format: mcp.servers.<name>
         JsonNode mcpServers = rootNode.path("mcp").path("servers");
@@ -138,5 +140,62 @@ class WorkspaceWriterTest {
         assertTrue(skillMarkdown.contains("name: launch-protocol"));
         assertTrue(skillMarkdown.contains("Secret launch code"));
         assertTrue(skillMarkdown.contains("# Launch Code: 42"));
+    }
+
+    @Test
+    void writesCustomProviderWithFreshHeadersOnEveryWrite(@TempDir Path tempDir) throws IOException {
+        AtomicInteger issued = new AtomicInteger();
+        ProviderSpec provider = ProviderSpec.openAiCompatible(
+                "godric",
+                "https://llm.example.test/v1",
+                () -> Map.of("Authorization", "token-" + issued.incrementAndGet()),
+                List.of(ProviderSpec.ModelSpec.multimodal("global:GPT", 128_000, 8_000),
+                        new ProviderSpec.ModelSpec("text-only", null, true, false, 0, 0)));
+        AgentSpec spec = AgentSpec.builder("boss").build();
+
+        JsonNode first = mapper.readTree(writer.write(tempDir.resolve("a"), spec, null, List.of(provider))
+                .resolve("opencode.json").toFile());
+        JsonNode second = mapper.readTree(writer.write(tempDir.resolve("b"), spec, null, List.of(provider))
+                .resolve("opencode.json").toFile());
+
+        JsonNode node = first.path("provider").path("godric");
+        assertEquals("@ai-sdk/openai-compatible", node.path("npm").asText());
+        assertEquals("https://llm.example.test/v1", node.path("options").path("baseURL").asText());
+        assertEquals("token-1", node.path("options").path("headers").path("Authorization").asText());
+        assertEquals("token-2", second.path("provider").path("godric").path("options")
+                .path("headers").path("Authorization").asText());
+
+        JsonNode multimodal = node.path("models").path("global:GPT");
+        assertTrue(multimodal.path("tool_call").asBoolean());
+        assertTrue(multimodal.path("attachment").asBoolean());
+        assertEquals("image", multimodal.path("modalities").path("input").get(1).asText());
+        assertEquals(128_000, multimodal.path("limit").path("context").asInt());
+
+        JsonNode textOnly = node.path("models").path("text-only");
+        assertEquals("text-only", textOnly.path("name").asText());
+        assertFalse(textOnly.path("attachment").asBoolean());
+        assertFalse(textOnly.has("limit"));
+    }
+
+    @Test
+    void omitsProviderSectionWhenNoneConfigured(@TempDir Path tempDir) throws IOException {
+        Path directory = writer.write(tempDir, AgentSpec.builder("boss").build(), null, List.of());
+
+        assertFalse(mapper.readTree(directory.resolve("opencode.json").toFile()).has("provider"));
+    }
+
+    @Test
+    void usesRunLimitsMaxStepsAsTheStepCapUnlessStepsIsSet(@TempDir Path tempDir) throws IOException {
+        AgentSpec limited = AgentSpec.builder("limited").limits(RunLimits.builder().maxSteps(7).build()).build();
+        AgentSpec explicit = AgentSpec.builder("explicit").steps(3)
+                .limits(RunLimits.builder().maxSteps(7).build()).build();
+
+        JsonNode a = mapper.readTree(writer.write(tempDir.resolve("a"), limited, null)
+                .resolve("opencode.json").toFile());
+        JsonNode b = mapper.readTree(writer.write(tempDir.resolve("b"), explicit, null)
+                .resolve("opencode.json").toFile());
+
+        assertEquals(7, a.path("agent").path("limited").path("steps").asInt());
+        assertEquals(3, b.path("agent").path("explicit").path("steps").asInt());
     }
 }

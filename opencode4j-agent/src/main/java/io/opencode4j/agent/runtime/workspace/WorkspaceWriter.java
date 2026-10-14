@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import io.opencode4j.runtime.spec.AgentSpec;
 import io.opencode4j.runtime.spec.McpToolSpec;
+import io.opencode4j.runtime.spec.ProviderSpec;
 import io.opencode4j.runtime.spec.SkillSpec;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -39,13 +40,28 @@ public final class WorkspaceWriter {
             AgentSpec rootSpec,
             Map<String, McpToolSpec> extraMcpServers
     ) throws IOException {
+        return write(workspaceDir, rootSpec, extraMcpServers, List.of());
+    }
+
+    /**
+     * Same as {@link #write(Path, AgentSpec, Map)} but also declares custom LLM providers. Provider header
+     * suppliers are evaluated here, once per call, so credentials are fresh for each written workspace.
+     *
+     * @param providers custom OpenAI-compatible providers to declare in the workspace config
+     */
+    public Path write(
+            Path workspaceDir,
+            AgentSpec rootSpec,
+            Map<String, McpToolSpec> extraMcpServers,
+            List<ProviderSpec> providers
+    ) throws IOException {
         Objects.requireNonNull(workspaceDir, "workspaceDir");
         Objects.requireNonNull(rootSpec, "rootSpec");
 
         Files.createDirectories(workspaceDir);
         val canonicalDir = workspaceDir.toRealPath();
         val agents = rootSpec.allAgents();
-        val config = createConfiguration(rootSpec, agents, extraMcpServers);
+        val config = createConfiguration(rootSpec, agents, extraMcpServers, providers);
         val configFile = canonicalDir.resolve("opencode.json");
         MAPPER.writeValue(configFile.toFile(), config);
         log.debug("Wrote workspace configuration to {}", configFile);
@@ -59,7 +75,8 @@ public final class WorkspaceWriter {
     }
 
     private WorkspaceConfiguration createConfiguration(
-            AgentSpec rootSpec, List<AgentSpec> agents, Map<String, McpToolSpec> extraMcpServers) {
+            AgentSpec rootSpec, List<AgentSpec> agents, Map<String, McpToolSpec> extraMcpServers,
+            List<ProviderSpec> providers) {
         val depth = rootSpec.calculateDepth();
         val agentConfig = new LinkedHashMap<String, WorkspaceConfiguration.Agent>();
         agents.forEach(agent -> agentConfig.put(agent.name(), toAgentConfiguration(agent, rootSpec.name())));
@@ -69,10 +86,45 @@ public final class WorkspaceWriter {
         return WorkspaceConfiguration.builder()
                 .experimental(depth >= 2
                         ? WorkspaceConfiguration.Experimental.builder().subagentDepth(depth).build() : null)
+                .provider(toProviderConfiguration(providers))
                 .agent(agentConfig)
                 .mcp(servers.isEmpty() ? null : WorkspaceConfiguration.Mcp.builder()
                         .servers(servers).build())
                 .build();
+    }
+
+    private Map<String, WorkspaceConfiguration.Provider> toProviderConfiguration(List<ProviderSpec> providers) {
+        if (providers == null || providers.isEmpty()) {
+            return null;
+        }
+        val result = new LinkedHashMap<String, WorkspaceConfiguration.Provider>();
+        providers.forEach(provider -> result.put(provider.id(), WorkspaceConfiguration.Provider.builder()
+                .npm("@ai-sdk/openai-compatible")
+                .name(provider.name())
+                .options(WorkspaceConfiguration.ProviderOptions.builder()
+                        .baseUrl(provider.baseUrl())
+                        .headers(provider.headers().get())
+                        .build())
+                .models(toModelConfiguration(provider.models()))
+                .build()));
+        return result;
+    }
+
+    private Map<String, WorkspaceConfiguration.ProviderModel> toModelConfiguration(
+            List<ProviderSpec.ModelSpec> models) {
+        val result = new LinkedHashMap<String, WorkspaceConfiguration.ProviderModel>();
+        models.forEach(model -> result.put(model.id(), WorkspaceConfiguration.ProviderModel.builder()
+                .id(model.id())
+                .name(model.name())
+                .toolCall(model.toolCalling())
+                .attachment(model.vision())
+                .modalities(new WorkspaceConfiguration.Modalities(
+                        model.vision() ? List.of("text", "image") : List.of("text"), List.of("text")))
+                .limit(model.contextTokens() > 0 && model.outputTokens() > 0
+                        ? new WorkspaceConfiguration.Limit(model.contextTokens(), model.outputTokens())
+                        : null)
+                .build()));
+        return result;
     }
 
     private WorkspaceConfiguration.Agent toAgentConfiguration(AgentSpec agent, String rootName) {
@@ -81,15 +133,27 @@ public final class WorkspaceWriter {
                 .description(nonBlank(agent.description()))
                 .prompt(nonBlank(agent.instruction()))
                 .model(nonBlank(agent.model()))
-                .steps(agent.steps() != null && agent.steps() > 0 ? agent.steps() : null)
-                .permissions(agent.permissions().stream()
-                        .map(rule -> WorkspaceConfiguration.Permission.builder()
-                                .action(rule.action())
-                                .resource(rule.resource())
-                                .effect(rule.effect().wireValue())
-                                .build())
-                        .toList())
+                .steps(agent.effectiveSteps())
+                .permission(toPermissionMap(agent.permissions()))
                 .build();
+    }
+
+    private Map<String, Object> toPermissionMap(List<io.opencode4j.runtime.spec.PermissionRule> permissions) {
+        if (permissions == null || permissions.isEmpty()) {
+            return null;
+        }
+        val map = new LinkedHashMap<String, Object>();
+        for (val rule : permissions) {
+            String effect = rule.effect().wireValue();
+            if ("*".equals(rule.resource())) {
+                map.put(rule.action(), effect);
+            } else {
+                @SuppressWarnings("unchecked")
+                Map<String, String> sub = (Map<String, String>) map.computeIfAbsent(rule.action(), k -> new LinkedHashMap<String, String>());
+                sub.put(rule.resource(), effect);
+            }
+        }
+        return map;
     }
 
     private String nonBlank(String value) {
