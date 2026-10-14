@@ -5,7 +5,8 @@ import java.time.Duration;
 /**
  * Budget and resource limits enforced across an agent execution.
  *
- * @param maxSteps            maximum step turns allowed for the primary agent (server-enforced)
+ * @param maxSteps            maximum step turns for the primary agent; written to the server config as the agent's step cap
+ *                            unless {@link AgentSpec#steps()} is set (which takes precedence)
  * @param maxCost             maximum cumulative cost in USD across all sessions before interrupt
  * @param maxTokens           maximum cumulative tokens across all sessions before interrupt
  * @param timeout             maximum wall-clock duration before run interrupt

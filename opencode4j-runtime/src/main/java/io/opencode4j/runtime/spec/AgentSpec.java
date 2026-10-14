@@ -39,6 +39,17 @@ public record AgentSpec(
     }
 
     /**
+     * The per-agent step cap that is written to the server config: {@link #steps()} when positive,
+     * otherwise {@link RunLimits#maxSteps()} when positive, otherwise {@code null} (uncapped).
+     */
+    public Integer effectiveSteps() {
+        if (steps != null && steps > 0) {
+            return steps;
+        }
+        return limits.maxSteps() != null && limits.maxSteps() > 0 ? limits.maxSteps() : null;
+    }
+
+    /**
      * Calculates the sub-agent tree depth (number of child levels below this agent).
      *
      * <p>A root agent with no subagents has depth 0. Root with direct subagents has depth 1.
@@ -162,6 +173,12 @@ public record AgentSpec(
 
         public Builder javaTools(Object toolInstance) {
             this.tools.add(JavaMethodToolSpec.of(toolInstance));
+            return this;
+        }
+
+        public Builder dynamicTools(String name, String description,
+                io.opencode4j.runtime.tool.DynamicToolProvider provider) {
+            this.tools.add(DynamicToolSpec.of(name, description, provider));
             return this;
         }
 
