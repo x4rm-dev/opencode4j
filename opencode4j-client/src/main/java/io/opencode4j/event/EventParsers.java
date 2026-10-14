@@ -128,7 +128,19 @@ final class EventParsers {
             return error.asText();
         }
         String message = text(error, "message");
-        return message != null ? message : text(data, "message");
+        if (message == null) {
+            return text(data, "message");
+        }
+        // Provider failures carry an HTTP status; keep it (and the error type) so callers can tell an
+        // expired credential ("provider.auth", HTTP 401) from other failures. Statusless errors such as
+        // "aborted" keep their plain message.
+        JsonNode status = error.get("status");
+        if (status == null || status.isNull()) {
+            return message;
+        }
+        String type = text(error, "type");
+        String detail = (type != null ? type + ", " : "") + "HTTP " + status.asText();
+        return message + " [" + detail + "]";
     }
 
     private static Map<String, Object> object(JsonNode node) {

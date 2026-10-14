@@ -156,6 +156,24 @@ class SseEventParserTest {
     }
 
     @Test
+    void keepsTheProviderErrorTypeAndStatusInTheFailureDetail() {
+        // Given: the exact payload OpenCode 2.0.20 emits when a provider rejects the credential
+        String error = "{\"type\":\"provider.auth\",\"message\":\"Unauthorized\",\"status\":401,"
+                + "\"response\":{\"body\":\"{}\"}}";
+
+        // When
+        ExecutionEnded failed = assertInstanceOf(ExecutionEnded.class, SseEventParser.parseLine(line(
+                "session.execution.failed", "{\"sessionID\":\"s\",\"error\":" + error + "}")));
+        StepFailed stepFailed = assertInstanceOf(StepFailed.class, SseEventParser.parseLine(line(
+                "session.step.failed", "{\"sessionID\":\"s\",\"assistantMessageID\":\"m\",\"error\":" + error + "}")));
+
+        // Then
+        assertEquals("Unauthorized [provider.auth, HTTP 401]", failed.detail());
+        assertEquals("provider.auth", stepFailed.errorType());
+        assertEquals("Unauthorized [provider.auth, HTTP 401]", stepFailed.message());
+    }
+
+    @Test
     void parsesAQuestionFormWithItsFields() {
         // Given
         String data = "{\"form\":{\"id\":\"frm_1\",\"sessionID\":\"s\",\"title\":\"Questions\","
