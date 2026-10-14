@@ -54,6 +54,55 @@ class OpenCodeAgentRuntimeTest {
     }
 
     @Test
+    void deletesTheWorkspaceWithItsCredentialsWhenTheSessionClosesIfRequested(@TempDir Path tempDir) {
+        server.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                String path = request.getPath();
+                String body = path != null && path.startsWith("/api/agent")
+                        ? "{\"data\":[{\"id\":\"solo\",\"name\":\"solo\"}]}"
+                        : path != null && "/api/session".equals(path) && "POST".equals(request.getMethod())
+                        ? "{\"data\":{\"id\":\"ses_x\",\"title\":\"solo\"}}" : "{}";
+                return new MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody(body);
+            }
+        });
+        var provider = io.opencode4j.runtime.spec.ProviderSpec.openAiCompatible("p", "http://llm.test/v1",
+                () -> java.util.Map.of("Authorization", "secret-token"), List.of());
+        OpenCodeAgentRuntime runtime = OpenCodeAgentRuntime.builder(client)
+                .baseWorkspacesDir(tempDir).deleteWorkspaceOnClose(true).providers(List.of(provider)).build();
+
+        AgentSession session = runtime.open(AgentSpec.builder("solo").build());
+        Path workspace = ((OpenCodeAgentSession) session).workspaceDir();
+        assertTrue(java.nio.file.Files.exists(workspace.resolve("opencode.json")));
+
+        session.close();
+
+        org.junit.jupiter.api.Assertions.assertFalse(java.nio.file.Files.exists(workspace));
+    }
+
+    @Test
+    void keepsTheWorkspaceByDefault(@TempDir Path tempDir) {
+        server.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                String path = request.getPath();
+                String body = path != null && path.startsWith("/api/agent")
+                        ? "{\"data\":[{\"id\":\"solo\",\"name\":\"solo\"}]}"
+                        : path != null && "/api/session".equals(path) && "POST".equals(request.getMethod())
+                        ? "{\"data\":{\"id\":\"ses_x\",\"title\":\"solo\"}}" : "{}";
+                return new MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody(body);
+            }
+        });
+        OpenCodeAgentRuntime runtime = OpenCodeAgentRuntime.builder(client).baseWorkspacesDir(tempDir).build();
+
+        AgentSession session = runtime.open(AgentSpec.builder("solo").build());
+        Path workspace = ((OpenCodeAgentSession) session).workspaceDir();
+        session.close();
+
+        assertTrue(java.nio.file.Files.exists(workspace));
+    }
+
+    @Test
     void runsCompleteAgentSessionLifecycleWithMockServer(@TempDir Path tempDir) {
         server.setDispatcher(new Dispatcher() {
             @Override

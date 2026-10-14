@@ -29,6 +29,7 @@ public final class OpenCodeAgentSession implements AgentSession {
     private final Path workspaceDir;
     private final LocationManager locationManager;
     private final JvmMcpServer jvmMcpServer;
+    private final boolean deleteWorkspaceOnClose;
 
     private final AtomicReference<OpenCodeAgentRun> currentRun = new AtomicReference<>();
 
@@ -40,6 +41,19 @@ public final class OpenCodeAgentSession implements AgentSession {
             LocationManager locationManager,
             JvmMcpServer jvmMcpServer
     ) {
+        this(sessionId, spec, client, workspaceDir, locationManager, jvmMcpServer, false);
+    }
+
+    public OpenCodeAgentSession(
+            String sessionId,
+            AgentSpec spec,
+            OpenCodeClient client,
+            Path workspaceDir,
+            LocationManager locationManager,
+            JvmMcpServer jvmMcpServer,
+            boolean deleteWorkspaceOnClose
+    ) {
+        this.deleteWorkspaceOnClose = deleteWorkspaceOnClose;
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
         this.spec = Objects.requireNonNull(spec, "spec");
         this.client = Objects.requireNonNull(client, "client");
@@ -104,6 +118,10 @@ public final class OpenCodeAgentSession implements AgentSession {
         // Close in-JVM MCP server
         if (jvmMcpServer != null) {
             jvmMcpServer.close();
+        }
+
+        if (deleteWorkspaceOnClose) {
+            WorkspaceCleaner.deleteQuietly(workspaceDir);
         }
     }
 }

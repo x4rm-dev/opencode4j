@@ -12,8 +12,10 @@ import io.opencode4j.model.Session;
 import io.opencode4j.runtime.AgentRuntime;
 import io.opencode4j.runtime.AgentSession;
 import io.opencode4j.runtime.spec.AgentSpec;
+import io.opencode4j.runtime.spec.DynamicToolSpec;
 import io.opencode4j.runtime.spec.JavaMethodToolSpec;
 import io.opencode4j.runtime.spec.McpToolSpec;
+import io.opencode4j.runtime.spec.ProviderSpec;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -49,18 +51,21 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
     private final Duration warmupTimeout;
     private final List<OpenCodeAgentSession> openSessions = Collections.synchronizedList(new ArrayList<>());
     private final boolean deleteWorkspaceOnClose;
+    private final List<ProviderSpec> providers;
 
     @lombok.Builder(builderClassName = "Builder", builderMethodName = "")
     public OpenCodeAgentRuntime(
             OpenCodeClient client,
             Path baseWorkspacesDir,
             Duration warmupTimeout,
-            boolean deleteWorkspaceOnClose
+            boolean deleteWorkspaceOnClose,
+            List<ProviderSpec> providers
     ) {
         this.client = Objects.requireNonNull(client, "client");
         this.baseWorkspacesDir = baseWorkspacesDir != null ? baseWorkspacesDir : defaultTempDir();
         this.warmupTimeout = warmupTimeout != null ? warmupTimeout : DEFAULT_WARMUP_TIMEOUT;
         this.deleteWorkspaceOnClose = deleteWorkspaceOnClose;
+        this.providers = providers == null ? List.of() : List.copyOf(providers);
         this.workspaceWriter = new WorkspaceWriter();
         this.locationManager = new LocationManager(client);
         this.mapper = new ObjectMapper();
@@ -89,7 +94,7 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
             jvmMcpServer = createToolServer(spec, agents);
             Map<String, McpToolSpec> extraMcp = jvmMcpServer == null ? Map.of() : Map.of(
                     JVM_TOOLS_SERVER_NAME, jvmMcpServer.asMcpToolSpec(JVM_TOOLS_SERVER_NAME));
-            Path canonicalDir = workspaceWriter.write(sessionDir, spec, extraMcp);
+            Path canonicalDir = workspaceWriter.write(sessionDir, spec, extraMcp, providers);
             locationManager.warmLocation(canonicalDir, agentNames, warmupTimeout);
             OpenCodeAgentSession agentSession = createSession(spec, canonicalDir, jvmMcpServer);
             openSessions.add(agentSession);
@@ -100,6 +105,9 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
             }
             if (jvmMcpServer != null) {
                 jvmMcpServer.close();
+            }
+            if (deleteWorkspaceOnClose) {
+                WorkspaceCleaner.deleteQuietly(sessionDir);
             }
             throw new IllegalStateException("Failed to open agent session for '" + spec.name() + "': " + e.getMessage(), e);
         }
@@ -123,11 +131,16 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
                 .filter(JavaMethodToolSpec.class::isInstance)
                 .map(JavaMethodToolSpec.class::cast)
                 .toList();
-        if (javaTools.isEmpty() && spec.resultSpec() == null) {
+        List<DynamicToolSpec> dynamicTools = agents.stream()
+                .flatMap(agent -> agent.tools().stream())
+                .filter(DynamicToolSpec.class::isInstance)
+                .map(DynamicToolSpec.class::cast)
+                .toList();
+        if (javaTools.isEmpty() && dynamicTools.isEmpty() && spec.resultSpec() == null) {
             return null;
         }
         String runId = "tools-" + UUID.randomUUID().toString().substring(0, 8);
-        return new JvmMcpServer(runId, javaTools, spec.resultSpec(), mapper);
+        return new JvmMcpServer(runId, javaTools, dynamicTools, spec.resultSpec(), mapper);
     }
 
     private OpenCodeAgentSession createSession(AgentSpec spec, Path directory, JvmMcpServer toolServer) {
@@ -138,7 +151,8 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
                 spec.name(), spec.name(), model, new LocationRef(directory.toString()),
                 Map.of("rootAgent", spec.name())));
         log.info("Created OpenCode session {} for agent '{}' in workspace {}", session.id(), spec.name(), directory);
-        return new OpenCodeAgentSession(session.id(), spec, client, directory, locationManager, toolServer);
+        return new OpenCodeAgentSession(session.id(), spec, client, directory, locationManager, toolServer,
+                deleteWorkspaceOnClose);
     }
 
     private static Path defaultTempDir() {
