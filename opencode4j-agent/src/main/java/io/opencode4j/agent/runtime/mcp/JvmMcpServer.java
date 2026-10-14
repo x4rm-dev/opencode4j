@@ -1,5 +1,6 @@
 package io.opencode4j.agent.runtime.mcp;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -7,9 +8,12 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.opencode4j.config.LocalServerDefaults;
+import io.opencode4j.runtime.spec.DynamicToolSpec;
 import io.opencode4j.runtime.spec.JavaMethodToolSpec;
 import io.opencode4j.runtime.spec.McpToolSpec;
 import io.opencode4j.runtime.spec.ResultSpec;
+import io.opencode4j.runtime.media.MediaResult;
+import io.opencode4j.runtime.tool.DynamicToolProvider;
 import io.opencode4j.runtime.tool.Param;
 import io.opencode4j.runtime.tool.Tool;
 import io.opencode4j.runtime.tool.ToolContext;
@@ -44,13 +48,21 @@ public final class JvmMcpServer implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(JvmMcpServer.class);
 
+    /** Executes one tool call. Reflective failures surface as {@link InvocationTargetException}. */
+    @FunctionalInterface
+    private interface ToolHandler {
+        Object invoke(JsonNode arguments, ToolContext context) throws Exception;
+    }
+
+    /** {@code handler} is {@code null} only for the built-in result submission tool. */
     private record RegisteredTool(
             String name,
             String description,
             ObjectNode inputSchema,
-            Object targetInstance,
-            Method method
+            ToolHandler handler
     ) {}
+
+    private static final TypeReference<Map<String, Object>> ARGUMENT_MAP = new TypeReference<>() {};
 
     private final ObjectMapper mapper;
     private final JsonSchemaGenerator schemaGenerator;
@@ -59,6 +71,8 @@ public final class JvmMcpServer implements AutoCloseable {
     private final HttpServer server;
     private final int port;
     private final Map<String, RegisteredTool> tools = new LinkedHashMap<>();
+    private final List<DynamicToolProvider> dynamicProviders = new ArrayList<>();
+    private final Map<String, DynamicToolProvider> dynamicIndex = new ConcurrentHashMap<>();
     private final ResultSpec<?> resultSpec;
     private final AtomicReference<Object> submittedResult = new AtomicReference<>();
     private final Map<String, AtomicBoolean> activeCancellations = new ConcurrentHashMap<>();
@@ -79,6 +93,16 @@ public final class JvmMcpServer implements AutoCloseable {
             ResultSpec<?> resultSpec,
             ObjectMapper mapper
     ) throws IOException {
+        this(runId, toolSpecs, List.of(), resultSpec, mapper);
+    }
+
+    public JvmMcpServer(
+            String runId,
+            List<JavaMethodToolSpec> toolSpecs,
+            List<DynamicToolSpec> dynamicToolSpecs,
+            ResultSpec<?> resultSpec,
+            ObjectMapper mapper
+    ) throws IOException {
         this.runId = Objects.requireNonNull(runId, "runId");
         this.mapper = Objects.requireNonNull(mapper, "mapper");
         this.schemaGenerator = new JsonSchemaGenerator(mapper);
@@ -90,6 +114,11 @@ public final class JvmMcpServer implements AutoCloseable {
             for (JavaMethodToolSpec spec : toolSpecs) {
                 registerJavaTools(spec.instance());
             }
+        }
+
+        if (dynamicToolSpecs != null) {
+            dynamicToolSpecs.forEach(spec -> dynamicProviders.add(spec.provider()));
+            refreshDynamicIndex();
         }
 
         // Register auto result submission tool if configured
@@ -156,7 +185,8 @@ public final class JvmMcpServer implements AutoCloseable {
             }
             String toolName = !tool.name().isBlank() ? tool.name() : method.getName();
             ObjectNode schema = schemaGenerator.schemaForMethod(method);
-            tools.put(toolName, new RegisteredTool(toolName, tool.description(), schema, target, method));
+            tools.put(toolName, new RegisteredTool(toolName, tool.description(), schema,
+                    (arguments, context) -> invokeReflective(target, method, arguments, context)));
             log.debug("Registered in-JVM tool '{}' from method {}.{}", toolName, clazz.getSimpleName(), method.getName());
         }
     }
@@ -167,7 +197,6 @@ public final class JvmMcpServer implements AutoCloseable {
                 "submit_result",
                 "Submit the final structured review or result matching the required schema. Call exactly once.",
                 schema,
-                null,
                 null
         ));
         log.debug("Registered in-JVM structured result tool 'submit_result' for type {}", spec.targetType().getSimpleName());
@@ -254,7 +283,105 @@ public final class JvmMcpServer implements AutoCloseable {
             t.put("description", tool.description());
             t.set("inputSchema", tool.inputSchema());
         }
+        refreshDynamicIndex().forEach(definition -> {
+            ObjectNode t = toolsArray.addObject();
+            t.put("name", definition.name());
+            t.put("description", definition.description());
+            t.set("inputSchema", mapper.valueToTree(definition.inputSchema()));
+        });
         return result;
+    }
+
+    /**
+     * Re-reads every dynamic provider's tool list and rebuilds the name index. Names that collide with a
+     * static tool (or an earlier provider) are skipped with a warning.
+     *
+     * @return the definitions that are actually exposed
+     */
+    private synchronized List<DynamicToolProvider.ToolDefinition> refreshDynamicIndex() {
+        Map<String, DynamicToolProvider> fresh = new LinkedHashMap<>();
+        List<DynamicToolProvider.ToolDefinition> exposed = new ArrayList<>();
+        for (DynamicToolProvider provider : dynamicProviders) {
+            for (DynamicToolProvider.ToolDefinition definition : provider.listTools()) {
+                if (tools.containsKey(definition.name()) || fresh.containsKey(definition.name())) {
+                    log.warn("Ignoring dynamic tool '{}': name already registered", definition.name());
+                    continue;
+                }
+                fresh.put(definition.name(), provider);
+                exposed.add(definition);
+            }
+        }
+        dynamicIndex.clear();
+        dynamicIndex.putAll(fresh);
+        return exposed;
+    }
+
+    private DynamicToolProvider findDynamicProvider(String toolName) {
+        DynamicToolProvider provider = dynamicIndex.get(toolName);
+        if (provider == null && !dynamicProviders.isEmpty()) {
+            refreshDynamicIndex();
+            provider = dynamicIndex.get(toolName);
+        }
+        return provider;
+    }
+
+    private Object invokeReflective(Object target, Method method, JsonNode args, ToolContext toolContext)
+            throws Exception {
+        Parameter[] parameters = method.getParameters();
+        Object[] arguments = new Object[parameters.length];
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter param = parameters[i];
+            if (ToolContext.class.isAssignableFrom(param.getType())) {
+                arguments[i] = toolContext;
+            } else {
+                Param paramAnno = param.getAnnotation(Param.class);
+                String paramName = paramAnno != null && !paramAnno.name().isBlank()
+                        ? paramAnno.name() : param.getName();
+                arguments[i] = mapper.treeToValue(args.path(paramName), param.getType());
+            }
+        }
+        method.setAccessible(true);
+        return method.invoke(target, arguments);
+    }
+
+    private Object invokeDynamic(DynamicToolProvider provider, String toolName, JsonNode args,
+            ToolContext toolContext) throws InvocationTargetException {
+        try {
+            Map<String, Object> arguments = args == null || args.isMissingNode() || args.isNull()
+                    ? Map.of() : mapper.convertValue(args, ARGUMENT_MAP);
+            return provider.call(toolName, arguments, toolContext);
+        } catch (Exception e) {
+            throw new InvocationTargetException(e);
+        }
+    }
+
+    /** Renders a tool's return value into MCP content items and returns a short log summary. */
+    private String renderOutput(Object output, ArrayNode content) {
+        if (output instanceof MediaResult media) {
+            if (media.mimeType().startsWith("image/")) {
+                ObjectNode item = content.addObject();
+                item.put("type", "image");
+                item.put("data", media.base64());
+                item.put("mimeType", media.mimeType());
+            } else if (!media.mimeType().startsWith("text/") || media.bytes().length > 0) {
+                ObjectNode item = content.addObject();
+                item.put("type", "resource");
+                ObjectNode res = item.putObject("resource");
+                res.put("uri", "data:" + media.mimeType() + ";base64," + media.base64());
+                res.put("mimeType", media.mimeType());
+                if (media.name() != null) {
+                    res.put("name", media.name());
+                }
+            }
+            if (media.text() != null && !media.text().isBlank()) {
+                content.addObject().put("type", "text").put("text", media.text());
+            }
+            return (media.name() != null ? media.name() : "media")
+                    + " (" + media.mimeType() + ", " + media.bytes().length + " bytes)";
+        }
+        String outputStr = output != null ? String.valueOf(output) : "null";
+        content.addObject().put("type", "text").put("text", outputStr);
+        return outputStr;
     }
 
     private JsonNode handleToolCall(JsonNode params, String rpcId) {
@@ -263,10 +390,11 @@ public final class JvmMcpServer implements AutoCloseable {
         String sessionId = params.path("_meta").path("ai.opencode/sessionID").asText("");
 
         RegisteredTool tool = tools.get(toolName);
+        DynamicToolProvider dynamicProvider = tool == null ? findDynamicProvider(toolName) : null;
         ObjectNode result = mapper.createObjectNode();
         ArrayNode content = result.putArray("content");
 
-        if (tool == null) {
+        if (tool == null && dynamicProvider == null) {
             result.put("isError", true);
             content.addObject().put("type", "text").put("text", "Unknown tool: " + toolName);
             return result;
@@ -293,11 +421,7 @@ public final class JvmMcpServer implements AutoCloseable {
                 return result;
             }
 
-            // Normal Java tool invocation
-            Method method = tool.method();
-            Parameter[] parameters = method.getParameters();
-            Object[] arguments = new Object[parameters.length];
-
+            // Normal tool invocation (reflective Java method or dynamic provider)
             ToolContext toolContext = new ToolContext() {
                 @Override public String runId() { return runId; }
                 @Override public String sessionId() { return sessionId; }
@@ -306,48 +430,11 @@ public final class JvmMcpServer implements AutoCloseable {
                 @Override public boolean isCancelled() { return cancelled.get(); }
             };
 
-            for (int i = 0; i < parameters.length; i++) {
-                Parameter param = parameters[i];
-                if (ToolContext.class.isAssignableFrom(param.getType())) {
-                    arguments[i] = toolContext;
-                } else {
-                    Param paramAnno = param.getAnnotation(Param.class);
-                    String paramName = paramAnno != null && !paramAnno.name().isBlank() ? paramAnno.name() : param.getName();
-                    JsonNode val = args.path(paramName);
-                    arguments[i] = mapper.treeToValue(val, param.getType());
-                }
-            }
-
-            method.setAccessible(true);
-            Object output = method.invoke(tool.targetInstance(), arguments);
-            if (output instanceof io.opencode4j.runtime.media.MediaResult media) {
-                if (media.mimeType().startsWith("image/")) {
-                    ObjectNode item = content.addObject();
-                    item.put("type", "image");
-                    item.put("data", media.base64());
-                    item.put("mimeType", media.mimeType());
-                } else {
-                    ObjectNode item = content.addObject();
-                    item.put("type", "resource");
-                    ObjectNode res = item.putObject("resource");
-                    String dataUri = "data:" + media.mimeType() + ";base64," + media.base64();
-                    res.put("uri", dataUri);
-                    res.put("mimeType", media.mimeType());
-                    if (media.name() != null) {
-                        res.put("name", media.name());
-                    }
-                }
-                if (media.text() != null && !media.text().isBlank()) {
-                    content.addObject().put("type", "text").put("text", media.text());
-                }
-                String summary = (media.name() != null ? media.name() : "media")
-                        + " (" + media.mimeType() + ", " + media.bytes().length + " bytes)";
-                recordInvocation(toolName, sessionId, args.toString(), summary, false, System.currentTimeMillis() - t0);
-            } else {
-                String outputStr = output != null ? String.valueOf(output) : "null";
-                content.addObject().put("type", "text").put("text", outputStr);
-                recordInvocation(toolName, sessionId, args.toString(), outputStr, false, System.currentTimeMillis() - t0);
-            }
+            Object output = tool != null
+                    ? tool.handler().invoke(args, toolContext)
+                    : invokeDynamic(dynamicProvider, toolName, args, toolContext);
+            String summary = renderOutput(output, content);
+            recordInvocation(toolName, sessionId, args.toString(), summary, false, System.currentTimeMillis() - t0);
         } catch (InvocationTargetException e) {
             result.put("isError", true);
             String errorMsg = e.getCause() != null ? e.getCause().toString() : e.toString();
