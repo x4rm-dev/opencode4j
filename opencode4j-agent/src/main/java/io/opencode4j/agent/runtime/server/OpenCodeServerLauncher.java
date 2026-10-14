@@ -57,14 +57,26 @@ public final class OpenCodeServerLauncher {
     private final int requestedPort;
     private final boolean cleanRoom;
     private final Duration startupTimeout;
+    private final Map<String, String> environment;
 
+    public OpenCodeServerLauncher(String binaryPath, int port, boolean cleanRoom, Duration startupTimeout) {
+        this(binaryPath, port, cleanRoom, startupTimeout, null);
+    }
+
+    /**
+     * @param environment extra environment variables for the spawned server process (for example
+     *                    {@code NODE_TLS_REJECT_UNAUTHORIZED=0} for an endpoint with an internal CA); applied
+     *                    after the launcher's own variables, so they take precedence
+     */
     @Builder
     public OpenCodeServerLauncher(
             String binaryPath,
             int port,
             boolean cleanRoom,
-            Duration startupTimeout
+            Duration startupTimeout,
+            Map<String, String> environment
     ) {
+        this.environment = environment == null ? Map.of() : Map.copyOf(environment);
         this.binaryPath = binaryPath != null ? binaryPath : findBinary();
         this.requestedPort = port;
         this.cleanRoom = cleanRoom;
@@ -136,6 +148,7 @@ public final class OpenCodeServerLauncher {
             CLEAN_ROOM_ENV_DIRECTORIES.forEach(
                     (name, directory) -> env.put(name, cleanRoomDir.resolve(directory).toString()));
         }
+        env.putAll(environment);
 
         return pb.start();
     }
