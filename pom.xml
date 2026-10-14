@@ -6,7 +6,7 @@
 
     <groupId>dev.x4rm.opencode4j</groupId>
     <artifactId>opencode4j</artifactId>
-    <version>0.1.0-alpha.1</version>
+    <version>0.1.0-alpha.2</version>
     <packaging>pom</packaging>
 
     <name>opencode4j</name>
