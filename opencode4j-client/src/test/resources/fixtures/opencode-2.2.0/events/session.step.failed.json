@@ -1,0 +1,32 @@
+{
+ "id": "evt_192fdfd17001RsP9vXI1V6f2ZT",
+ "created": 1793467481367,
+ "type": "session.step.failed",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "assistantMessageID": "msg_192fdfc4a00134ceS0BiBx3TV4",
+  "error": {
+   "type": "aborted",
+   "message": "Step interrupted"
+  },
+  "rawFinish": "tool_calls",
+  "tokens": {
+   "input": 11,
+   "output": 3,
+   "reasoning": 0,
+   "cache": {
+    "read": 0,
+    "write": 0
+   }
+  },
+  "cost": 0
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 22,
+  "version": 1
+ }
+}

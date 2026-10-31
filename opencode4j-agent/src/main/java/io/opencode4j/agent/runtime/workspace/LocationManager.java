@@ -1,5 +1,6 @@
 package io.opencode4j.agent.runtime.workspace;
 
+import io.opencode4j.OpenCodeAuthException;
 import io.opencode4j.OpenCodeException;
 import io.opencode4j.client.HttpMethod;
 import io.opencode4j.client.OpenCodeClient;
@@ -61,6 +62,7 @@ public final class LocationManager {
      * @param expectedAgents set of expected agent names/IDs
      * @param timeout        maximum duration to wait
      * @throws IllegalStateException if the agents do not appear before timeout
+     * @throws OpenCodeAuthException if the server rejects the credentials
      */
     public void warmLocation(
             Path canonicalDir,
@@ -95,13 +97,12 @@ public final class LocationManager {
             }
             log.trace("Warmup attempt {} on {}: visible={}, expected={}",
                     state.attempts, directory, state.lastSeen, expectedAgents);
+        } catch (OpenCodeAuthException e) {
+            // Retrying cannot fix credentials; surface the typed failure immediately.
+            log.warn("OpenCode server rejected credentials during warm-up (HTTP {}); verify {}",
+                    e.statusCode(), EnvironmentVariables.OPENCODE_SERVER_PASSWORD);
+            throw e;
         } catch (OpenCodeException e) {
-            switch (e.statusCode()) {
-                case 401 -> throw new IllegalStateException(
-                        "Authentication failed connecting to OpenCode server (HTTP 401): please verify "
-                                + EnvironmentVariables.OPENCODE_SERVER_PASSWORD, e);
-                case 403 -> throw new IllegalStateException("Access forbidden by OpenCode server (HTTP 403)", e);
-            }
             state.lastException = e;
             log.trace("Warmup poll failed on attempt {}: {}", state.attempts, e.getMessage());
         }

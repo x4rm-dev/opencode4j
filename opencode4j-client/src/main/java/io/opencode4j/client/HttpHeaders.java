@@ -6,6 +6,8 @@ public final class HttpHeaders {
     public static final String CONTENT_TYPE = "Content-Type";
     public static final String ACCEPT = "Accept";
     public static final String COOKIE = "Cookie";
+    public static final String REQUEST_ID = "X-Request-Id";
+    public static final String LAST_EVENT_ID = "Last-Event-ID";
 
     public static final String APPLICATION_JSON = "application/json";
     public static final String APPLICATION_JSON_UTF8 = "application/json; charset=utf-8";

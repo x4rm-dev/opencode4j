@@ -9,7 +9,10 @@ package io.opencode4j.event;
 public sealed interface OpenCodeEvent
         permits TextDelta, ReasoningDelta, ToolStarted, ToolCalled, ToolSucceeded, ToolFailed,
         StepEnded, StepFailed, ExecutionStarted, ExecutionEnded, PermissionAsked, FormCreated,
-        SessionCreated, UnknownEvent {
+        SessionCreated, ServerConnected, SessionDeleted, SessionRenamed, SessionMetadataUpdated,
+        SessionUsageUpdated, SessionIdle, StepStarted, TextEnded, CompactionStarted, CompactionEnded,
+        CompactionFailed, PermissionReplied, LocationShutdown, SessionStatusChanged, RetryScheduled,
+        McpStatusChanged, UnknownEvent {
 
     /** The server's event type, for example {@code "session.text.delta"}. */
     String type();

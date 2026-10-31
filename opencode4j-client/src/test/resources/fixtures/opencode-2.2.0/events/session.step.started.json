@@ -1,0 +1,23 @@
+{
+ "id": "evt_192fdfb74001VQVZ3OnsGT3zL0",
+ "created": 1793467480948,
+ "type": "session.step.started",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "agent": "build",
+  "model": {
+   "id": "fake-1",
+   "providerID": "fake"
+  },
+  "assistantMessageID": "msg_192fdfb6e001FWsrJdM7x844gD",
+  "started": 1793467480944
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 5,
+  "version": 1
+ }
+}

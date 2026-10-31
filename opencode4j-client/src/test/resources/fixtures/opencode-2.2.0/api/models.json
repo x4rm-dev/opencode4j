@@ -1,0 +1,59 @@
+{
+ "location": {
+  "directory": "/work"
+ },
+ "data": [
+  {
+   "id": "fake-1",
+   "modelID": "fake-1",
+   "providerID": "fake",
+   "name": "fake",
+   "package": "@opencode/ai/providers/openai-compatible",
+   "settings": {
+    "apiKey": "x",
+    "baseURL": "http://127.0.0.1:48732/v1",
+    "provider": "fake"
+   },
+   "capabilities": {
+    "tools": true,
+    "input": [
+     "text",
+     "image"
+    ],
+    "output": [
+     "text"
+    ]
+   },
+   "variants": [
+    {
+     "id": "low",
+     "settings": {
+      "reasoningEffort": "low"
+     }
+    },
+    {
+     "id": "medium",
+     "settings": {
+      "reasoningEffort": "medium"
+     }
+    },
+    {
+     "id": "high",
+     "settings": {
+      "reasoningEffort": "high"
+     }
+    }
+   ],
+   "time": {
+    "released": 0
+   },
+   "cost": [],
+   "status": "active",
+   "enabled": true,
+   "limit": {
+    "context": 100000,
+    "output": 4096
+   }
+  }
+ ]
+}

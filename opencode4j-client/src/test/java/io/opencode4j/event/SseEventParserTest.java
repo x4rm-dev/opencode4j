@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
  * Parser tests. The payloads are real events captured from an OpenCode 2.0.20 server, shortened only by
  * removing bulky provider state, except {@code permission.asked}, which is built from the server schema.
  */
+@SuppressWarnings("removal") // parseLine stays covered until it is removed
 class SseEventParserTest {
 
     private static final String SESSION = "ses_f0c408fe8ffebMS4ePmP1sR7mR";
@@ -30,8 +31,8 @@ class SseEventParserTest {
     }
 
     @Test
-    void dropsHousekeepingEvents() {
-        assertNull(SseEventParser.parseLine(line("server.connected", "{}")));
+    void typesConnectedAndDropsLegacyHeartbeatEvents() {
+        assertInstanceOf(ServerConnected.class, SseEventParser.parseLine(line("server.connected", "{}")));
         assertNull(SseEventParser.parseLine(line("server.heartbeat", "{}")));
     }
 
@@ -234,13 +235,13 @@ class SseEventParserTest {
     @Test
     void unmodelledTypesBecomeUnknownEventsCarryingTheRawJson() {
         // Given
-        String raw = line("mcp.status.changed", "{\"server\":\"codebase-memory-mcp\"}");
+        String raw = line("mcp.resources.changed", "{\"server\":\"codebase-memory-mcp\"}");
 
         // When
         UnknownEvent event = assertInstanceOf(UnknownEvent.class, SseEventParser.parseLine(raw));
 
         // Then
-        assertEquals("mcp.status.changed", event.type());
+        assertEquals("mcp.resources.changed", event.type());
         assertEquals(true, event.rawJson().contains("codebase-memory-mcp"));
     }
 

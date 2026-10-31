@@ -1,0 +1,29 @@
+{
+ "id": "evt_192fdfb7700232xXt12iTyCSTL",
+ "created": 1793467480951,
+ "type": "session.step.ended",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "assistantMessageID": "msg_192fdfb6e001FWsrJdM7x844gD",
+  "finish": "stop",
+  "rawFinish": "stop",
+  "tokens": {
+   "input": 11,
+   "output": 3,
+   "reasoning": 0,
+   "cache": {
+    "read": 0,
+    "write": 0
+   }
+  },
+  "cost": 0
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 9,
+  "version": 1
+ }
+}

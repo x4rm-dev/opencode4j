@@ -1,0 +1,9 @@
+{
+ "id": "evt_192fef3fd001tDRSMBpjORFnix",
+ "created": 1793467544573,
+ "type": "location.shutdown",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {}
+}

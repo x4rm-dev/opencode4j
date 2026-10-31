@@ -1,0 +1,23 @@
+{
+ "id": "evt_192fdfd15002kW3LaWW1bBIEu5",
+ "created": 1793467481365,
+ "type": "session.tool.failed",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "assistantMessageID": "msg_192fdfc4a00134ceS0BiBx3TV4",
+  "id": "call_1",
+  "error": {
+   "type": "aborted",
+   "message": "The user declined this tool call"
+  },
+  "executed": false
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 21,
+  "version": 2
+ }
+}

@@ -1,0 +1,19 @@
+{
+ "id": "evt_192fdfb76002KcOoZ0D1p2v1Fa",
+ "created": 1793467480950,
+ "type": "session.text.ended",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "assistantMessageID": "msg_192fdfb6e001FWsrJdM7x844gD",
+  "ordinal": 0,
+  "text": "pong"
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 7,
+  "version": 1
+ }
+}

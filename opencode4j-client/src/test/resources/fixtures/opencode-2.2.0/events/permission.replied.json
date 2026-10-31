@@ -1,0 +1,13 @@
+{
+ "id": "evt_192fdfd150018PJGK2goS7hNZV",
+ "created": 1793467481365,
+ "type": "permission.replied",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "requestID": "per_192fdfc74001E7ZPwNaR7Hf3DW",
+  "reply": "reject"
+ }
+}

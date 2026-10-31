@@ -9,7 +9,10 @@ import io.opencode4j.client.api.FileApi;
 import io.opencode4j.client.api.IntegrationApi;
 import io.opencode4j.client.api.InteractionApi;
 import io.opencode4j.client.api.McpApi;
+import io.opencode4j.client.api.MessageApi;
+import io.opencode4j.client.api.PermissionApi;
 import io.opencode4j.client.api.PromptApi;
+import io.opencode4j.client.api.ProviderApi;
 import io.opencode4j.client.api.ServerApi;
 import io.opencode4j.client.api.SessionApi;
 import io.opencode4j.client.api.ShellApi;
@@ -41,6 +44,9 @@ public final class OpenCodeClient {
     private final FileApi files;
     private final McpApi mcp;
     private final AgentApi agents;
+    private final MessageApi messages;
+    private final PermissionApi permissions;
+    private final ProviderApi providers;
 
     public OpenCodeClient(OkHttpClient http,
                           OpenCodeConfig config,
@@ -58,6 +64,9 @@ public final class OpenCodeClient {
         this.files = new FileApi(transport);
         this.mcp = new McpApi(transport);
         this.agents = new AgentApi(transport);
+        this.messages = new MessageApi(transport);
+        this.permissions = new PermissionApi(transport);
+        this.providers = new ProviderApi(transport);
     }
 
     public static OpenCodeClient create(OpenCodeConfig config) {
@@ -121,6 +130,21 @@ public final class OpenCodeClient {
     /** Registered agents for locations. */
     public AgentApi agents() {
         return agents;
+    }
+
+    /** Session message history. */
+    public MessageApi messages() {
+        return messages;
+    }
+
+    /** Pending permission requests and their answers. */
+    public PermissionApi permissions() {
+        return permissions;
+    }
+
+    /** Providers and models available in a location. */
+    public ProviderApi providers() {
+        return providers;
     }
 
     /** Underlying transport for direct low-level requests. */

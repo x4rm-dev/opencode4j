@@ -1,0 +1,16 @@
+{
+ "id": "evt_192fdfc3f002Mm2AYPNtM51gel",
+ "created": 1793467481151,
+ "type": "session.metadata.updated",
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "metadata": {
+   "releaseId": "r1"
+  }
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 12,
+  "version": 1
+ }
+}

@@ -1,0 +1,24 @@
+{
+ "id": "evt_192fdfc74002tqZru99axh5HuN",
+ "created": 1793467481204,
+ "type": "permission.asked",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "id": "per_192fdfc74001E7ZPwNaR7Hf3DW",
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "action": "shell",
+  "resources": [
+   "echo hi"
+  ],
+  "save": [
+   "echo *"
+  ],
+  "source": {
+   "type": "tool",
+   "messageID": "msg_192fdfc4a00134ceS0BiBx3TV4",
+   "id": "call_1"
+  }
+ }
+}

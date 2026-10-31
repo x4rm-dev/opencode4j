@@ -1,0 +1,12 @@
+{
+ "id": "evt_192fe4b7e001fwj0JAOZzbkk0X",
+ "created": 1793467501438,
+ "type": "session.compaction.delta",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "text": "po"
+ }
+}

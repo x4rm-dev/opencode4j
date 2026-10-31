@@ -1,0 +1,27 @@
+{
+ "id": "evt_192fdfb65003g1ykraydha7D6N",
+ "created": 1793467480933,
+ "type": "session.inbox.enqueued",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "inboxID": "msg_192fdfa85001ltX431l1v5ybSf",
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "item": {
+   "type": "user",
+   "payload": {
+    "text": "ping",
+    "metadata": {
+     "turnId": "t1"
+    }
+   },
+   "delivery": "steer"
+  }
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 1,
+  "version": 1
+ }
+}

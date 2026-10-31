@@ -1,0 +1,27 @@
+{
+ "id": "evt_192fdfa6e001ZPLhsU4GP5mb6Z",
+ "created": 1793467480686,
+ "type": "session.created",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "slug": "playful-lagoon",
+  "version": "2.2.0",
+  "projectID": "1ed9f33c27bb7ec3cf4bc3d1509262253bfb8d46",
+  "location": {
+   "directory": "/work"
+  },
+  "subpath": "",
+  "title": "capture",
+  "metadata": {
+   "conversationId": "c1"
+  }
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 0,
+  "version": 1
+ }
+}

@@ -1,0 +1,14 @@
+{
+ "id": "evt_192fdfb76001FhSrRjq1A5S8B0",
+ "created": 1793467480950,
+ "type": "session.text.delta",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "assistantMessageID": "msg_192fdfb6e001FWsrJdM7x844gD",
+  "ordinal": 0,
+  "delta": "pong"
+ }
+}

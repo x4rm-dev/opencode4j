@@ -1,11 +1,10 @@
 package io.opencode4j.agent.runtime.workspace;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.opencode4j.OpenCodeException;
+import io.opencode4j.OpenCodeAuthException;
 import io.opencode4j.client.OpenCodeClient;
 import io.opencode4j.config.OpenCodeConfig;
 import java.io.IOException;
@@ -68,11 +67,11 @@ class LocationManagerTest {
     void failsImmediatelyForAuthenticationAndAuthorizationErrors(@TempDir Path directory) {
         for (int status : new int[] {401, 403}) {
             server.enqueue(new MockResponse().setResponseCode(status));
-            IllegalStateException failure = assertThrows(IllegalStateException.class,
+            OpenCodeAuthException failure = assertThrows(OpenCodeAuthException.class,
                     () -> manager.warmLocation(directory, Set.of("boss"), Duration.ofSeconds(3)));
 
             assertTrue(failure.getMessage().contains("HTTP " + status));
-            assertEquals(status, assertInstanceOf(OpenCodeException.class, failure.getCause()).statusCode());
+            assertEquals(status, failure.statusCode());
         }
         assertEquals(2, server.getRequestCount());
     }

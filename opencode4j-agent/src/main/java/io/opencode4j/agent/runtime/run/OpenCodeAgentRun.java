@@ -91,12 +91,12 @@ public final class OpenCodeAgentRun implements AgentRun {
             }
             sendPromptTurn();
             while (!future.isDone()) {
-                val line = stream.readLine();
-                if (line == null) {
+                val frame = stream.nextFrame();
+                if (frame == null) {
                     finish(ExecutionOutcome.FAILED, "Event stream ended before root execution completed");
                     break;
                 }
-                val event = SseEventParser.parseLine(line);
+                val event = SseEventParser.parse(frame);
                 if (event != null) {
                     processEvent(event);
                 }

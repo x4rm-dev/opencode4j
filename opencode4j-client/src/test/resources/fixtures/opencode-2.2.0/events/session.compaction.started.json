@@ -1,0 +1,18 @@
+{
+ "id": "evt_192fe4b72002bTyiI40TrTb3rR",
+ "created": 1793467501426,
+ "type": "session.compaction.started",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "reason": "manual",
+  "inputID": "msg_192fe4b6c001uxmt30eFy2iFka"
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 27,
+  "version": 1
+ }
+}

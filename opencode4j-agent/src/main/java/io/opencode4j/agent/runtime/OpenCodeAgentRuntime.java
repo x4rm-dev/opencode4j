@@ -1,6 +1,7 @@
 package io.opencode4j.agent.runtime;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opencode4j.OpenCodeException;
 import io.opencode4j.agent.runtime.mcp.JvmMcpServer;
 import io.opencode4j.agent.runtime.workspace.LocationManager;
 import io.opencode4j.agent.runtime.workspace.WorkspaceWriter;
@@ -108,6 +109,9 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
             }
             if (deleteWorkspaceOnClose) {
                 WorkspaceCleaner.deleteQuietly(sessionDir);
+            }
+            if (e instanceof OpenCodeException openCodeException) {
+                throw openCodeException;
             }
             throw new IllegalStateException("Failed to open agent session for '" + spec.name() + "': " + e.getMessage(), e);
         }

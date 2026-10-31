@@ -130,7 +130,7 @@ final class RunEventProcessor {
                             case ALWAYS -> PermissionDecision.ALWAYS;
                             case REJECT -> PermissionDecision.REJECT;
                         };
-                        client.interactions().replyPermission(sid, e.id(), decision, reply.message());
+                        client.permissions().reply(sid, e.id(), decision, reply.message());
                     }));
             case ExecutionEnded e -> {
                 if (rootSessionId.equals(sid)) {
