@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.opencode4j.client.OpenCodeClient;
 import io.opencode4j.config.OpenCodeConfig;
 import io.opencode4j.runtime.AgentEventListener;
+import io.opencode4j.runtime.FailureCategory;
+import io.opencode4j.runtime.RunStatus;
 import io.opencode4j.runtime.RunPrompt;
 import io.opencode4j.runtime.event.AgentEvent;
 import io.opencode4j.runtime.event.DelegationCompletedEvent;
@@ -211,7 +213,8 @@ class OpenCodeAgentRunTest {
         int runs = 100;
         StringBuilder body = new StringBuilder(CONNECTED);
         for (int i = 0; i < runs; i++) {
-            body.append(text("s" + i, "answer " + i))
+            body.append(event("session.execution.started", "\"sessionID\":\"s" + i + "\""))
+                    .append(text("s" + i, "answer " + i))
                     .append(event("session.execution.succeeded", "\"sessionID\":\"s" + i + "\""));
         }
         var streamRequests = new java.util.concurrent.atomic.AtomicInteger();
@@ -262,6 +265,117 @@ class OpenCodeAgentRunTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    @Test
+    void ignoresTheEndOfAnExecutionItDidNotSeeStart() throws Exception {
+        // Given: a stale end from a previous turn arrives before this run's own execution
+        configure("", true, false);
+        streamOverride = CONNECTED
+                + event("session.execution.interrupted", "\"sessionID\":\"root\",\"reason\":\"user\"")
+                + ROOT_STARTED + text("root", "fresh")
+                + event("session.execution.succeeded", "\"sessionID\":\"root\"");
+        var run = run(AgentSpec.builder("boss").build(), events::add);
+
+        // When
+        run.start();
+        var result = run.result().get(3, TimeUnit.SECONDS);
+
+        // Then
+        assertTrue(result.isSuccess(), result.errorMessage());
+        assertEquals("fresh", result.text());
+    }
+
+    @Test
+    void usesTheFinalAssistantStepFromHistoryAsTheAnswer() throws Exception {
+        // Given: the stream carries intermediate narration; history holds the steps of the turn
+        configure(text("root", "Let me check the logs. ") + text("root", "Theo had 3,412 timeouts.")
+                + event("session.execution.succeeded", "\"sessionID\":\"root\""), false, false);
+        history = "{\"data\":["
+                + "{\"id\":\"msg_4\",\"type\":\"idle\",\"time\":{\"created\":4},\"outcome\":\"succeeded\"},"
+                + "{\"id\":\"msg_3\",\"type\":\"assistant\",\"time\":{\"created\":3},\"agent\":\"boss\","
+                + "\"model\":{\"id\":\"m\",\"providerID\":\"p\"},"
+                + "\"content\":[{\"type\":\"text\",\"text\":\"Theo had 3,412 timeouts.\"}]},"
+                + "{\"id\":\"msg_2\",\"type\":\"assistant\",\"time\":{\"created\":2},\"agent\":\"boss\","
+                + "\"model\":{\"id\":\"m\",\"providerID\":\"p\"},"
+                + "\"content\":[{\"type\":\"text\",\"text\":\"Let me check the logs. \"}]}],\"cursor\":{}}";
+        var run = run(AgentSpec.builder("boss").build(), events::add);
+
+        // When
+        run.start();
+        var result = run.result().get(3, TimeUnit.SECONDS);
+
+        // Then
+        assertEquals("Theo had 3,412 timeouts.", result.text());
+        assertTrue(events.stream().anyMatch(e -> e instanceof RunCompletedEvent c
+                && c.finalText().equals("Theo had 3,412 timeouts.")));
+    }
+
+    @Test
+    void classifiesProviderFailures() throws Exception {
+        // Given
+        configure(event("session.execution.failed", "\"sessionID\":\"root\",\"error\":{"
+                + "\"type\":\"provider.rate-limit\",\"message\":\"slow down\",\"status\":429,"
+                + "\"retryAfterMs\":2000}"), false, false);
+        var run = run(AgentSpec.builder("boss").build(), events::add);
+
+        // When
+        run.start();
+        var result = run.result().get(3, TimeUnit.SECONDS);
+
+        // Then
+        assertEquals(RunStatus.FAILED, result.status());
+        assertEquals(FailureCategory.LLM_RATE_LIMITED, result.failureCategory());
+        assertEquals(2_000L, result.retryAfterMs());
+        assertEquals("slow down", result.errorMessage());
+        assertTrue(events.stream().anyMatch(RunFailedEvent.class::isInstance));
+    }
+
+    @Test
+    void limitsEndPartialAndCancellationEndsCancelled() throws Exception {
+        // Given
+        configure(step("root", 7, 0.07), true, false);
+        var budget = run(AgentSpec.builder("boss").limits(RunLimits.builder().maxTokens(7).build()).build(), null);
+        var timeout = run(AgentSpec.builder("boss").limits(RunLimits.builder()
+                .timeout(Duration.ofMillis(300)).build()).build(), null);
+
+        // When
+        budget.start();
+        timeout.start();
+        var budgetResult = budget.result().get(3, TimeUnit.SECONDS);
+        var timeoutResult = timeout.result().get(3, TimeUnit.SECONDS);
+        var cancelled = run(AgentSpec.builder("boss").build(), null);
+        cancelled.start();
+        cancelled.cancel();
+        var cancelledResult = cancelled.result().get(3, TimeUnit.SECONDS);
+
+        // Then
+        assertEquals(RunStatus.PARTIAL, budgetResult.status());
+        assertEquals(FailureCategory.BUDGET, budgetResult.failureCategory());
+        assertEquals(7, budgetResult.tokenUsage().total(), "partial results keep their accounting");
+        assertEquals(RunStatus.PARTIAL, timeoutResult.status());
+        assertEquals(FailureCategory.TIMEOUT, timeoutResult.failureCategory());
+        assertEquals(RunStatus.CANCELLED, cancelledResult.status());
+        assertFalse(cancelledResult.isSuccess());
+    }
+
+    @Test
+    void waitsForTheServerToFinishAPreviousTurnBeforePrompting() throws Exception {
+        // Given: the server reports the session busy twice, then idle
+        configure(event("session.execution.succeeded", "\"sessionID\":\"root\""), true, false);
+        var checks = new java.util.concurrent.atomic.AtomicInteger();
+        activeSupplier = () -> checks.incrementAndGet() <= 2
+                ? "{\"data\":{\"root\":{\"type\":\"running\"}}}" : "{\"data\":{}}";
+        var run = new OpenCodeAgentRun("run", "root", AgentSpec.builder("boss").build(), RunPrompt.of("hello"),
+                events::add, client, Path.of(".").toAbsolutePath(), null, true);
+
+        // When
+        run.start();
+        var result = run.result().get(5, TimeUnit.SECONDS);
+
+        // Then
+        assertTrue(result.isSuccess(), result.errorMessage());
+        assertEquals(3, checks.get());
     }
 
     @Test
@@ -429,6 +543,9 @@ class OpenCodeAgentRunTest {
     /** Second and later event stream bodies; {@code null} makes reconnects fail with HTTP 503. */
     private volatile String secondStream = "";
     private volatile String active = "{\"data\":{}}";
+    private volatile java.util.function.Supplier<String> activeSupplier;
+    /** Replaces the whole first stream body, including server.connected, when set. */
+    private volatile String streamOverride;
     private volatile String history = "{\"data\":[],\"cursor\":{}}";
 
     private void configure(String stream, boolean stalled, boolean failInterrupt) {
@@ -443,7 +560,8 @@ class OpenCodeAgentRunTest {
                         return new MockResponse().setResponseCode(503);
                     }
                     // Every connection starts with server.connected; reconnections stay open.
-                    String body = CONNECTED + (first ? stream : secondStream);
+                    String body = first && streamOverride != null ? streamOverride
+                            : CONNECTED + (first ? ROOT_STARTED + stream : secondStream);
                     var response = new MockResponse().setHeader("Content-Type", "text/event-stream").setBody(body);
                     if (stalled || !first) {
                         // Keep the connection open with an unfinished body so reads block after the events.
@@ -459,7 +577,8 @@ class OpenCodeAgentRunTest {
                     return new MockResponse().setResponseCode(failInterrupt ? 500 : 204);
                 }
                 if (path != null && path.equals("/api/session/active")) {
-                    return json(active);
+                    var supplier = activeSupplier;
+                    return json(supplier != null ? supplier.get() : active);
                 }
                 if (path != null && path.startsWith("/api/session/root/message")) {
                     return secondStream == null ? new MockResponse().setResponseCode(503) : json(history);
@@ -474,6 +593,8 @@ class OpenCodeAgentRunTest {
     }
 
     private static final String CONNECTED = "data: {\"type\":\"server.connected\",\"data\":{}}\n\n";
+    private static final String ROOT_STARTED =
+            "data: {\"type\":\"session.execution.started\",\"data\":{\"sessionID\":\"root\"}}\n\n";
 
     private static String event(String type, String data) {
         return "data: {\"type\":\"" + type + "\",\"data\":{" + data + "}}\n\n";

@@ -2,7 +2,6 @@ package io.opencode4j.agent.runtime.run;
 
 import io.opencode4j.OpenCodeException;
 import io.opencode4j.client.OpenCodeClient;
-import io.opencode4j.event.ExecutionOutcome;
 import io.opencode4j.model.PageRequest;
 import io.opencode4j.model.message.AssistantMessage;
 import io.opencode4j.model.message.IdleMessage;
@@ -29,7 +28,7 @@ final class RunReconciler {
      *
      * @param finalText the last assistant text after the prompt, or {@code null} if there is none
      */
-    record Outcome(ExecutionOutcome outcome, String detail, String finalText) {
+    record Outcome(RunEnd end, String finalText) {
     }
 
     private final OpenCodeClient client;
@@ -66,36 +65,43 @@ final class RunReconciler {
             if (idle == null) {
                 return null;
             }
-            String finalText = newestFirst.stream()
-                    .filter(AssistantMessage.class::isInstance)
-                    .map(AssistantMessage.class::cast)
-                    .filter(message -> after(message, promptMessageId) && !message.text().isBlank())
-                    .map(AssistantMessage::text)
-                    .findFirst()
-                    .orElse(null);
-            return new Outcome(outcome(idle), detail(idle), finalText);
+            return new Outcome(RunEnd.of(idle), lastAnswer(newestFirst, promptMessageId));
         } catch (OpenCodeException e) {
             log.warn("Could not read history of session {}: {}", rootSessionId, e.getMessage());
             return null;
         }
     }
 
+    /**
+     * The root agent's final answer: the text of the newest assistant step after the prompt. Unlike the
+     * streamed text it excludes the narration of intermediate steps ("Let me check the logs...").
+     *
+     * @return the answer, or {@code null} if there is none or the history cannot be read
+     */
+    String finalText(String promptMessageId) {
+        if (promptMessageId == null) {
+            return null;
+        }
+        try {
+            return lastAnswer(client.messages().list(rootSessionId, PageRequest.first(PAGE_SIZE)).items(),
+                    promptMessageId);
+        } catch (OpenCodeException e) {
+            log.debug("Could not read the final answer of session {}: {}", rootSessionId, e.getMessage());
+            return null;
+        }
+    }
+
+    private static String lastAnswer(List<Message> newestFirst, String promptMessageId) {
+        return newestFirst.stream()
+                .filter(AssistantMessage.class::isInstance)
+                .map(AssistantMessage.class::cast)
+                .filter(message -> after(message, promptMessageId) && !message.text().isBlank())
+                .map(AssistantMessage::text)
+                .findFirst()
+                .orElse(null);
+    }
+
     private static boolean after(Message message, String promptMessageId) {
         return message.id() != null && message.id().compareTo(promptMessageId) > 0;
-    }
-
-    private static ExecutionOutcome outcome(IdleMessage idle) {
-        return switch (idle.outcome() == null ? "" : idle.outcome()) {
-            case "succeeded" -> ExecutionOutcome.SUCCEEDED;
-            case "interrupted" -> ExecutionOutcome.INTERRUPTED;
-            default -> ExecutionOutcome.FAILED;
-        };
-    }
-
-    private static String detail(IdleMessage idle) {
-        if (idle.error() != null && idle.error().message() != null) {
-            return idle.error().message();
-        }
-        return idle.succeeded() ? null : "Execution " + idle.outcome() + " (recovered from session history)";
     }
 }

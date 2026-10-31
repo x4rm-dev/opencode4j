@@ -18,6 +18,9 @@ import java.util.Optional;
  * @param totalCost      cumulative cost in USD across the entire session tree
  * @param toolExecutions list of all tool calls made during the run
  * @param steps          breakdown of individual steps executed
+ * @param status          how the run ended; {@code success} is {@code status == SUCCEEDED}
+ * @param failureCategory why the run did not succeed, or {@code null} when it succeeded or was cancelled
+ * @param retryAfterMs    delay the provider asked for before retrying, or {@code null}
  */
 public record AgentResult(
         String runId,
@@ -30,8 +33,19 @@ public record AgentResult(
         TokenUsage tokenUsage,
         double totalCost,
         List<ToolExecution> toolExecutions,
-        List<StepSummary> steps
+        List<StepSummary> steps,
+        RunStatus status,
+        FailureCategory failureCategory,
+        Long retryAfterMs
 ) {
+
+    /** Result without a status breakdown; {@code status} is derived from {@code success}. */
+    public AgentResult(String runId, String sessionId, boolean success, String text, Object typedResult,
+                       String errorMessage, boolean truncated, TokenUsage tokenUsage, double totalCost,
+                       List<ToolExecution> toolExecutions, List<StepSummary> steps) {
+        this(runId, sessionId, success, text, typedResult, errorMessage, truncated, tokenUsage, totalCost,
+                toolExecutions, steps, null, null, null);
+    }
 
     public AgentResult {
         Objects.requireNonNull(runId, "runId");
@@ -40,6 +54,13 @@ public record AgentResult(
         tokenUsage = tokenUsage == null ? TokenUsage.ZERO : tokenUsage;
         toolExecutions = toolExecutions == null ? List.of() : List.copyOf(toolExecutions);
         steps = steps == null ? List.of() : List.copyOf(steps);
+        status = status != null ? status : success ? RunStatus.SUCCEEDED : RunStatus.FAILED;
+        success = status == RunStatus.SUCCEEDED;
+    }
+
+    /** Whether the run stopped at a limit and the text is a partial answer. */
+    public boolean isPartial() {
+        return status == RunStatus.PARTIAL;
     }
 
     public boolean isSuccess() {
@@ -70,6 +91,9 @@ public record AgentResult(
         private double totalCost;
         private List<ToolExecution> toolExecutions = List.of();
         private List<StepSummary> steps = List.of();
+        private RunStatus status;
+        private FailureCategory failureCategory;
+        private Long retryAfterMs;
 
         public Builder(String runId, String sessionId) {
             this.runId = Objects.requireNonNull(runId, "runId");
@@ -121,6 +145,23 @@ public record AgentResult(
             return this;
         }
 
+        /** Sets the status; also sets {@code success} accordingly. */
+        public Builder status(RunStatus status) {
+            this.status = status;
+            this.success = status == RunStatus.SUCCEEDED;
+            return this;
+        }
+
+        public Builder failureCategory(FailureCategory failureCategory) {
+            this.failureCategory = failureCategory;
+            return this;
+        }
+
+        public Builder retryAfterMs(Long retryAfterMs) {
+            this.retryAfterMs = retryAfterMs;
+            return this;
+        }
+
         public AgentResult build() {
             return new AgentResult(
                     runId,
@@ -133,7 +174,10 @@ public record AgentResult(
                     tokenUsage,
                     totalCost,
                     toolExecutions,
-                    steps
+                    steps,
+                    status,
+                    failureCategory,
+                    retryAfterMs
             );
         }
     }

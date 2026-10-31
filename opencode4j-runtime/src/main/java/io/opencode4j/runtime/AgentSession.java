@@ -1,6 +1,7 @@
 package io.opencode4j.runtime;
 
 import io.opencode4j.runtime.spec.AgentSpec;
+import java.util.Optional;
 
 /**
  * An established conversational session bound to an {@link AgentSpec}.
@@ -43,8 +44,28 @@ public interface AgentSession extends AutoCloseable {
      */
     AgentRun send(RunPrompt prompt, AgentEventListener listener);
 
+    /** The run in progress, if any. A session runs one prompt at a time. */
+    default Optional<AgentRun> activeRun() {
+        return Optional.empty();
+    }
+
     /**
-     * Closes this session, interrupting any active run and cleaning up session state.
+     * Stops observing the session without touching it on the server: an active run ends locally as
+     * {@link RunStatus#CANCELLED}, the server keeps the session (and finishes any turn in progress), and it can be
+     * resumed later.
+     */
+    default void detach() {
+        close();
+    }
+
+    /** Interrupts any active run and deletes the session on the server, including its sub-agent sessions. */
+    default void delete() {
+        close();
+    }
+
+    /**
+     * Closes this session: {@link #delete()} if it was opened with {@link SessionOptions#deleteOnClose()}, otherwise
+     * {@link #detach()}.
      */
     @Override
     void close();

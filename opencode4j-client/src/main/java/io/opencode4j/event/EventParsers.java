@@ -86,7 +86,7 @@ final class EventParsers {
             case "session.execution.succeeded" -> new ExecutionEnded(
                     text(data, "sessionID"), ExecutionOutcome.SUCCEEDED, null);
             case "session.execution.failed" -> new ExecutionEnded(
-                    text(data, "sessionID"), ExecutionOutcome.FAILED, errorMessage(data));
+                    text(data, "sessionID"), ExecutionOutcome.FAILED, errorMessage(data), errorInfo(data.get("error")));
             case "session.execution.interrupted" -> new ExecutionEnded(
                     text(data, "sessionID"), ExecutionOutcome.INTERRUPTED, text(data, "reason"));
             case "permission.asked" -> permissionAsked(data);

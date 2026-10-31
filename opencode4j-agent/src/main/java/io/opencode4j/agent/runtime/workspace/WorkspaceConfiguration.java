@@ -9,11 +9,26 @@ import lombok.Builder;
 @Builder
 @JsonInclude(JsonInclude.Include.NON_NULL)
 record WorkspaceConfiguration(
+        @JsonProperty("$schema") String schema,
+        String model,
+        @JsonProperty("small_model") String smallModel,
+        List<String> instructions,
+        Map<String, Object> permission,
+        List<Policy> policies,
+        List<String> plugin,
+        @JsonProperty("enabled_providers") List<String> enabledProviders,
+        String share,
+        Boolean autoupdate,
+        Compaction compaction,
         Experimental experimental,
         Map<String, Provider> provider,
         Map<String, Agent> agent,
         Mcp mcp
 ) {
+    record Policy(String action, String resource, String effect) {}
+
+    record Compaction(Boolean auto) {}
+
     @Builder
     @JsonInclude(JsonInclude.Include.NON_EMPTY)
     record Provider(
