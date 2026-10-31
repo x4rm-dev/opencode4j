@@ -52,6 +52,7 @@ final class RunEventProcessor {
     private final RunSessionHierarchy hierarchy;
     private final RunToolTracker tools = new RunToolTracker();
     private final RunAccounting accounting = new RunAccounting();
+    private String reconciledText;
 
     RunEventProcessor(String runId, String rootSessionId, AgentSpec spec, OpenCodeClient client,
                       AgentEventListener listener, BooleanSupplier terminal,
@@ -141,8 +142,14 @@ final class RunEventProcessor {
         }
     }
 
+    /** The root agent's answer: the text recovered from history after a gap, otherwise the streamed text. */
     String text() {
-        return accounting.rootText.toString();
+        return reconciledText != null ? reconciledText : accounting.rootText.toString();
+    }
+
+    /** Replaces the streamed text with the authoritative text read from the session history. */
+    void useReconciledText(String text) {
+        reconciledText = text;
     }
 
     AgentResult result(boolean success, String reason, Integer maxSteps, Object typedResult) {

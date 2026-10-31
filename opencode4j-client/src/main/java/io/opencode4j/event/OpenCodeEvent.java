@@ -16,4 +16,12 @@ public sealed interface OpenCodeEvent
 
     /** The server's event type, for example {@code "session.text.delta"}. */
     String type();
+
+    /**
+     * The session the event belongs to, or {@code null} for server- or location-wide events. Records with a
+     * {@code sessionId} component override this.
+     */
+    default String sessionId() {
+        return null;
+    }
 }

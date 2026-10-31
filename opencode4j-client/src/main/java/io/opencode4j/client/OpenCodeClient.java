@@ -2,6 +2,8 @@ package io.opencode4j.client;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opencode4j.client.api.AgentApi;
+import io.opencode4j.client.event.EventBus;
+import io.opencode4j.client.event.OpenCodeEventBus;
 import io.opencode4j.client.api.ConfigApi;
 import io.opencode4j.client.api.CredentialApi;
 import io.opencode4j.client.api.EventApi;
@@ -29,9 +31,14 @@ import okhttp3.OkHttpClient;
  * {@link #create(OpenCodeConfig)}, or with {@link #OpenCodeClient(OkHttpClient, OpenCodeConfig, ObjectMapper)}
  * to supply your own HTTP client and mapper.</p>
  */
-public final class OpenCodeClient {
+public final class OpenCodeClient implements AutoCloseable {
 
+    private final OkHttpClient http;
+    private final boolean ownsHttpClient;
     private final OpenCodeTransport transport;
+    private final Object busLock = new Object();
+    private OpenCodeEventBus eventBus;
+    private boolean closed;
     private final ServerApi server;
     private final SessionApi sessions;
     private final PromptApi prompts;
@@ -51,6 +58,12 @@ public final class OpenCodeClient {
     public OpenCodeClient(OkHttpClient http,
                           OpenCodeConfig config,
                           ObjectMapper mapper) {
+        this(http, config, mapper, false);
+    }
+
+    private OpenCodeClient(OkHttpClient http, OpenCodeConfig config, ObjectMapper mapper, boolean ownsHttpClient) {
+        this.http = http;
+        this.ownsHttpClient = ownsHttpClient;
         this.transport = new OpenCodeTransport(http, config, mapper);
         this.server = new ServerApi(transport);
         this.sessions = new SessionApi(transport);
@@ -77,7 +90,7 @@ public final class OpenCodeClient {
                 .connectionPool(new ConnectionPool(5, 5, TimeUnit.MINUTES))
                 .retryOnConnectionFailure(true)
                 .build();
-        return new OpenCodeClient(http, config, new ObjectMapper());
+        return new OpenCodeClient(http, config, new ObjectMapper(), true);
     }
 
     public ServerApi server() {
@@ -145,6 +158,45 @@ public final class OpenCodeClient {
     /** Providers and models available in a location. */
     public ProviderApi providers() {
         return providers;
+    }
+
+    /**
+     * The shared event bus: one self-healing connection to {@code /api/event} fanned out to subscribers.
+     * Created on first use; prefer it over {@link #events()}, which opens a raw stream per call.
+     */
+    public EventBus eventBus() {
+        synchronized (busLock) {
+            if (closed) {
+                throw new IllegalStateException("OpenCodeClient is closed");
+            }
+            if (eventBus == null) {
+                eventBus = new OpenCodeEventBus(transport);
+            }
+            return eventBus;
+        }
+    }
+
+    /**
+     * Closes the event bus and, when this client created its own HTTP client ({@link #create}), shuts down its
+     * dispatcher and connection pool. An HTTP client passed in by the caller is left running.
+     */
+    @Override
+    public void close() {
+        OpenCodeEventBus bus;
+        synchronized (busLock) {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            bus = eventBus;
+        }
+        if (bus != null) {
+            bus.close();
+        }
+        if (ownsHttpClient) {
+            http.dispatcher().executorService().shutdown();
+            http.connectionPool().evictAll();
+        }
     }
 
     /** Underlying transport for direct low-level requests. */

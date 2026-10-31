@@ -19,6 +19,7 @@ public class SseStream implements AutoCloseable {
     private final Response response;
     private final BufferedSource source;
     private final SseFrameDecoder decoder = new SseFrameDecoder();
+    private volatile long lastActivityNanos = System.nanoTime();
 
     public SseStream(Call call, Response response, ResponseBody body) {
         this.call = call;
@@ -28,7 +29,9 @@ public class SseStream implements AutoCloseable {
 
     /** Reads the next raw SSE line, or {@code null} at EOF. */
     public String readLine() throws IOException {
-        return source.readUtf8Line();
+        String line = source.readUtf8Line();
+        lastActivityNanos = System.nanoTime();
+        return line;
     }
 
     /**
@@ -39,6 +42,7 @@ public class SseStream implements AutoCloseable {
     public SseFrame nextFrame() throws IOException {
         String line;
         while ((line = source.readUtf8Line()) != null) {
+            lastActivityNanos = System.nanoTime();
             SseFrame frame = decoder.accept(line);
             if (frame != null) {
                 return frame;
@@ -51,6 +55,14 @@ public class SseStream implements AutoCloseable {
     /** The last event id received through {@link #nextFrame()}, or {@code null} if none. */
     public String lastEventId() {
         return decoder.lastEventId();
+    }
+
+    /**
+     * {@link System#nanoTime()} when the last line arrived, including comment lines such as the server's
+     * {@code : heartbeat}. Use it to detect a half-open connection.
+     */
+    public long lastActivityNanos() {
+        return lastActivityNanos;
     }
 
     @Override

@@ -2,9 +2,15 @@ package io.opencode4j.agent.runtime.run;
 
 import io.opencode4j.agent.runtime.mcp.JvmMcpServer;
 import io.opencode4j.client.OpenCodeClient;
-import io.opencode4j.client.SseStream;
+import io.opencode4j.client.event.EventBus;
+import io.opencode4j.client.event.EventFilter;
+import io.opencode4j.client.event.EventSink;
+import io.opencode4j.client.event.StreamGap;
+import io.opencode4j.client.event.Subscription;
+import io.opencode4j.client.event.SubscriptionOptions;
+import io.opencode4j.event.EventEnvelope;
 import io.opencode4j.event.ExecutionOutcome;
-import io.opencode4j.event.SseEventParser;
+import io.opencode4j.event.OpenCodeEvent;
 import io.opencode4j.runtime.AgentEventListener;
 import io.opencode4j.runtime.AgentResult;
 import io.opencode4j.runtime.AgentRun;
@@ -14,8 +20,10 @@ import io.opencode4j.runtime.event.RunFailedEvent;
 import io.opencode4j.runtime.event.RunInterruptedEvent;
 import io.opencode4j.runtime.event.RunStartedEvent;
 import io.opencode4j.runtime.spec.AgentSpec;
-import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -26,25 +34,39 @@ import lombok.extern.slf4j.Slf4j;
 import lombok.val;
 
 /**
- * Executes a single prompt turn, coordinating the stream and run lifecycle.
+ * Executes a single prompt turn on the client's shared {@link EventBus}.
+ *
+ * <p>The run subscribes to its session tree, waits until the stream is live, and only then sends the prompt,
+ * so no early event is lost. Events are processed on the subscription's own dispatcher thread, never on the
+ * shared reader. When the bus reports a {@link StreamGap} (a reconnect or a queue overflow), the run
+ * reconciles from the session history: if the session is idle the run ends with the recorded outcome and the
+ * final answer from history; otherwise it keeps listening.</p>
  */
 @Slf4j
 public final class OpenCodeAgentRun implements AgentRun {
+
+    private static final Duration LIVE_TIMEOUT = Duration.ofSeconds(15);
+
     private final String runId;
     private final String rootSessionId;
     private final AgentSpec spec;
     private final RunPrompt prompt;
     private final OpenCodeClient client;
-    private final Path workspaceDir;
     private final JvmMcpServer jvmMcpServer;
     private final CompletableFuture<AgentResult> future = new CompletableFuture<>();
+    private final RunReconciler reconciler;
 
     // Event processing and terminal snapshots share one lock, including reentrant listener cancellation.
     private final Object stateLock = new Object();
     private final RunEventProcessor eventProcessor;
     private boolean terminal;
     private boolean started;
-    private SseStream activeStream;
+    private Subscription subscription;
+    private Thread watchdog;
+    private volatile String promptMessageId;
+    // Events that arrive before the prompt is accepted are held and processed right after it, in order.
+    private final List<OpenCodeEvent> heldEvents = new ArrayList<>();
+    private boolean promptAccepted;
 
     public OpenCodeAgentRun(String runId, String rootSessionId, AgentSpec spec, RunPrompt prompt,
                             AgentEventListener listener, OpenCodeClient client, Path workspaceDir,
@@ -54,8 +76,9 @@ public final class OpenCodeAgentRun implements AgentRun {
         this.spec = Objects.requireNonNull(spec, "spec");
         this.prompt = Objects.requireNonNull(prompt, "prompt");
         this.client = Objects.requireNonNull(client, "client");
-        this.workspaceDir = Objects.requireNonNull(workspaceDir, "workspaceDir");
+        Objects.requireNonNull(workspaceDir, "workspaceDir");
         this.jvmMcpServer = jvmMcpServer;
+        this.reconciler = new RunReconciler(client, rootSessionId);
         eventProcessor = new RunEventProcessor(runId, rootSessionId, spec, client, listener,
                 this::isTerminal, this::finish, this::cancel);
     }
@@ -66,11 +89,11 @@ public final class OpenCodeAgentRun implements AgentRun {
                 return;
             }
             started = true;
-            Thread.ofVirtual().name("opencode-run-" + runId).start(this::runLoop);
+            Thread.ofVirtual().name("opencode-run-" + runId).start(this::begin);
         }
     }
 
-    private void runLoop() {
+    private void begin() {
         synchronized (stateLock) {
             if (terminal) {
                 return;
@@ -80,43 +103,38 @@ public final class OpenCodeAgentRun implements AgentRun {
             if (terminal) {
                 return;
             }
+            watchdog = startWatchdog();
         }
-        val watchdog = startWatchdog();
-        try (val stream = client.events().open(workspaceDir.toString())) {
+        try {
+            EventBus bus = client.eventBus();
+            Subscription opened = bus.subscribe(EventFilter.sessionTree(rootSessionId), new RunSink(),
+                    SubscriptionOptions.defaults().named(runId));
+            synchronized (stateLock) {
+                if (terminal) {
+                    opened.close();
+                    return;
+                }
+                subscription = opened;
+            }
+            bus.awaitLive().get(LIVE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
             synchronized (stateLock) {
                 if (terminal) {
                     return;
                 }
-                activeStream = stream;
             }
             sendPromptTurn();
-            while (!future.isDone()) {
-                val frame = stream.nextFrame();
-                if (frame == null) {
-                    finish(ExecutionOutcome.FAILED, "Event stream ended before root execution completed");
-                    break;
-                }
-                val event = SseEventParser.parse(frame);
-                if (event != null) {
-                    processEvent(event);
-                }
-            }
-        } catch (IOException | RuntimeException | Error e) {
-            // Errors (for example a LinkageError from a dependency clash) must also end the run: if the thread
-            // died without completing the future, await() would block forever.
-            synchronized (stateLock) {
-                if (!terminal) {
-                    log.error("Run loop failed on runId {}: {}", runId, e.getMessage(), e);
-                    finish(ExecutionOutcome.FAILED, "Event stream failure: " + e);
-                }
-            }
-        } finally {
-            synchronized (stateLock) {
-                activeStream = null;
-            }
-            if (watchdog != null) {
-                watchdog.interrupt();
-            }
+        } catch (TimeoutException e) {
+            finish(ExecutionOutcome.FAILED, "Event stream did not become live within " + LIVE_TIMEOUT.toSeconds() + " s");
+        } catch (ExecutionException e) {
+            finish(ExecutionOutcome.FAILED, "Event stream failed: " + e.getCause().getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            finish(ExecutionOutcome.INTERRUPTED, "Interrupted while starting the run");
+        } catch (RuntimeException | Error e) {
+            // Errors (for example a LinkageError from a dependency clash) must also end the run: if the run
+            // never completed its future, await() would block forever.
+            log.error("Run {} failed to start: {}", runId, e.getMessage(), e);
+            finish(ExecutionOutcome.FAILED, "Run start failed: " + e);
         }
     }
 
@@ -141,16 +159,51 @@ public final class OpenCodeAgentRun implements AgentRun {
 
     private void sendPromptTurn() {
         val receipt = client.prompts().send(rootSessionId, RunPromptFactory.create(runId, prompt, spec));
+        promptMessageId = receipt.id();
         log.debug("Sent prompt to session {}: receiptId={}", rootSessionId, receipt.id());
+        synchronized (stateLock) {
+            promptAccepted = true;
+            for (OpenCodeEvent held : heldEvents) {
+                eventProcessor.process(held);
+            }
+            heldEvents.clear();
+        }
     }
 
-    private void processEvent(io.opencode4j.event.OpenCodeEvent event) {
+    private void processEvent(OpenCodeEvent event) {
         synchronized (stateLock) {
+            if (!promptAccepted) {
+                heldEvents.add(event);
+                return;
+            }
             eventProcessor.process(event);
         }
     }
 
+    private void reconcile(StreamGap gap) {
+        if (isTerminal()) {
+            return;
+        }
+        log.info("Run {} may have missed events ({}); reconciling session {} from history",
+                runId, gap.reason(), rootSessionId);
+        val outcome = reconciler.reconcile(promptMessageId);
+        if (outcome == null) {
+            return;
+        }
+        synchronized (stateLock) {
+            if (terminal) {
+                return;
+            }
+            if (outcome.finalText() != null) {
+                eventProcessor.useReconciledText(outcome.finalText());
+            }
+            finish(outcome.outcome(), outcome.detail());
+        }
+    }
+
     private void finish(ExecutionOutcome outcome, String detail) {
+        Subscription closing;
+        Thread stopping;
         synchronized (stateLock) {
             if (terminal || future.isDone()) {
                 return;
@@ -169,11 +222,23 @@ public final class OpenCodeAgentRun implements AgentRun {
                 case INTERRUPTED -> new RunInterruptedEvent(runId, rootSessionId, spec.name(), spec.name(), now, reason);
             });
             future.complete(result);
+            closing = subscription;
+            subscription = null;
+            stopping = watchdog;
+            watchdog = null;
+        }
+        if (closing != null) {
+            closing.close();
+        }
+        if (stopping != null && stopping != Thread.currentThread()) {
+            stopping.interrupt();
         }
     }
 
     private boolean isTerminal() {
-        return terminal;
+        synchronized (stateLock) {
+            return terminal;
+        }
     }
 
     @Override
@@ -198,25 +263,45 @@ public final class OpenCodeAgentRun implements AgentRun {
 
     @Override
     public void cancel() {
-        SseStream stream;
         synchronized (stateLock) {
             if (terminal || future.isDone()) {
                 return;
             }
-            stream = activeStream;
             finish(ExecutionOutcome.INTERRUPTED, "Cancelled or interrupted");
         }
         try {
-            if (stream != null) {
-                stream.close();
-            }
-        } finally {
+            client.sessions().interrupt(rootSessionId);
+            log.debug("Interrupted root session {} for run {}", rootSessionId, runId);
+        } catch (RuntimeException e) {
+            log.warn("Failed to interrupt root session {}: {}", rootSessionId, e.getMessage());
+        }
+    }
+
+    /** Receives this run's events on the subscription's dispatcher thread. */
+    private final class RunSink implements EventSink {
+
+        @Override
+        public void onEvent(EventEnvelope envelope) {
             try {
-                client.sessions().interrupt(rootSessionId);
-                log.debug("Interrupted root session {} for run {}", rootSessionId, runId);
-            } catch (RuntimeException e) {
-                log.warn("Failed to interrupt root session {}: {}", rootSessionId, e.getMessage());
+                processEvent(envelope.event());
+            } catch (RuntimeException | Error e) {
+                log.error("Event processing failed on runId {}: {}", runId, e.getMessage(), e);
+                finish(ExecutionOutcome.FAILED, "Event processing failure: " + e);
             }
+        }
+
+        @Override
+        public void onGap(StreamGap gap) {
+            try {
+                reconcile(gap);
+            } catch (RuntimeException e) {
+                log.warn("Reconciling run {} failed; waiting for live events: {}", runId, e.toString());
+            }
+        }
+
+        @Override
+        public void onFailure(Throwable cause) {
+            finish(ExecutionOutcome.FAILED, "Event stream failed: " + cause.getMessage());
         }
     }
 }
