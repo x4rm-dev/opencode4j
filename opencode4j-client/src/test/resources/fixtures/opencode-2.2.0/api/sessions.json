@@ -1,0 +1,35 @@
+{
+ "data": [
+  {
+   "id": "ses_e6d020593ffe4q46YQ96agDiQ0",
+   "projectID": "1ed9f33c27bb7ec3cf4bc3d1509262253bfb8d46",
+   "cost": 0,
+   "tokens": {
+    "input": 44,
+    "output": 12,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "outcome": "succeeded",
+   "time": {
+    "created": 1793467480686,
+    "updated": 1793467501421,
+    "idle": 1793467501447
+   },
+   "title": "renamed",
+   "metadata": {
+    "releaseId": "r1"
+   },
+   "location": {
+    "directory": "/work"
+   }
+  }
+ ],
+ "cursor": {
+  "previous": "eyJhbmNob3IiOnsiaWQiOiJzZXNfZTZkMDIwNTkzZmZlNHE0NllROTZhZ0RpUTAiLCJ0aW1lIjoxNzkzNDY3NTAxNDIxLCJkaXJlY3Rpb24iOiJwcmV2aW91cyJ9fQ",
+  "next": "eyJhbmNob3IiOnsiaWQiOiJzZXNfZTZkMDIwNTkzZmZlNHE0NllROTZhZ0RpUTAiLCJ0aW1lIjoxNzkzNDY3NTAxNDIxLCJkaXJlY3Rpb24iOiJuZXh0In19"
+ }
+}

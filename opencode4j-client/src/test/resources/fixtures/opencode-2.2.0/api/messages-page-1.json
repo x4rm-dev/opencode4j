@@ -1,0 +1,48 @@
+{
+ "data": [
+  {
+   "id": "msg_193000f530018dZmp4FS4LdLOB",
+   "time": {
+    "created": 1793467617107
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  },
+  {
+   "id": "msg_193000f49001dLJ5Q62fufqWeP",
+   "time": {
+    "created": 1793467617099,
+    "streamed": 1793467617105,
+    "completed": 1793467617106
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "fake-1",
+    "providerID": "fake"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "pong"
+    }
+   ],
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 11,
+    "output": 3,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  }
+ ],
+ "cursor": {
+  "previous": "eyJpZCI6Im1zZ18xOTMwMDBmNTMwMDE4ZFptcDRGUzRMZExPQiIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0",
+  "next": "eyJpZCI6Im1zZ18xOTMwMDBmNDkwMDFkTEo1UTYyZnVmcVdlUCIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ"
+ }
+}

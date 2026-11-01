@@ -11,6 +11,14 @@ public interface ToolContext {
     /** OpenCode session identifier that issued this call. */
     String sessionId();
 
+    /**
+     * Root session of the calling session's tree: the session the caller opened, even when a sub-agent's child
+     * session made the call. Use it to look up the conversation, user or tenant a call belongs to.
+     */
+    default String rootSessionId() {
+        return sessionId();
+    }
+
     /** Name of the agent making the call. */
     String agentName();
 

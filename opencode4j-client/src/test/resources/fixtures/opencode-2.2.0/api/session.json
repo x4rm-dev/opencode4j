@@ -1,0 +1,29 @@
+{
+ "data": {
+  "id": "ses_e6cfff195ffe9s35LGy6Kwc13x",
+  "projectID": "1ed9f33c27bb7ec3cf4bc3d1509262253bfb8d46",
+  "cost": 0,
+  "tokens": {
+   "input": 11,
+   "output": 3,
+   "reasoning": 0,
+   "cache": {
+    "read": 0,
+    "write": 0
+   }
+  },
+  "outcome": "succeeded",
+  "time": {
+   "created": 1793467616875,
+   "updated": 1793467617106,
+   "idle": 1793467617107
+  },
+  "title": "history",
+  "metadata": {
+   "conversationId": "c2"
+  },
+  "location": {
+   "directory": "/work"
+  }
+ }
+}

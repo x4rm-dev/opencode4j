@@ -1,0 +1,18 @@
+{
+ "location": {
+  "directory": "/work"
+ },
+ "data": [
+  {
+   "id": "fake",
+   "name": "Fake",
+   "activation": "enabled",
+   "package": "@opencode/ai/providers/openai-compatible",
+   "settings": {
+    "apiKey": "x",
+    "baseURL": "http://127.0.0.1:48732/v1",
+    "provider": "fake"
+   }
+  }
+ ]
+}

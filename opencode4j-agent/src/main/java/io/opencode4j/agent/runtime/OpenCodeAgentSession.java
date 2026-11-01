@@ -1,65 +1,62 @@
 package io.opencode4j.agent.runtime;
 
-import io.opencode4j.agent.runtime.mcp.JvmMcpServer;
 import io.opencode4j.agent.runtime.run.OpenCodeAgentRun;
-import io.opencode4j.agent.runtime.workspace.LocationManager;
+import io.opencode4j.agent.runtime.run.RunOptions;
 import io.opencode4j.client.OpenCodeClient;
 import io.opencode4j.runtime.AgentEventListener;
+import io.opencode4j.runtime.AgentResult;
 import io.opencode4j.runtime.AgentRun;
 import io.opencode4j.runtime.AgentSession;
+import io.opencode4j.runtime.FailureCategory;
 import io.opencode4j.runtime.RunPrompt;
+import io.opencode4j.runtime.RunStatus;
+import io.opencode4j.runtime.SessionBusyException;
+import io.opencode4j.runtime.SessionOptions;
 import io.opencode4j.runtime.spec.AgentSpec;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import java.util.function.Consumer;
+import lombok.extern.slf4j.Slf4j;
 
 /**
- * An established conversational session backed by an OpenCode session and dedicated workspace location.
+ * A conversational session backed by an OpenCode session in a shared {@link OpenCodeWorkspace}.
+ *
+ * <p>A session runs one prompt at a time: {@link #send} throws {@link SessionBusyException} while a run is in
+ * progress. After a run that ended locally while the server may still be working (cancelled, stopped at a limit,
+ * or cut off from the event stream), the next run first waits for the server to finish that turn.</p>
  */
+@Slf4j
 public final class OpenCodeAgentSession implements AgentSession {
-
-    private static final Logger log = LoggerFactory.getLogger(OpenCodeAgentSession.class);
 
     private final String sessionId;
     private final AgentSpec spec;
     private final OpenCodeClient client;
-    private final Path workspaceDir;
-    private final LocationManager locationManager;
-    private final JvmMcpServer jvmMcpServer;
-    private final boolean deleteWorkspaceOnClose;
+    private final OpenCodeWorkspace workspace;
+    private final SessionOptions options;
+    private final RunRegistry runs;
+    private final Consumer<OpenCodeAgentSession> onClosed;
+    private final boolean retireWorkspaceOnClose;
+    private final RunOptions runOptions;
 
-    private final AtomicReference<OpenCodeAgentRun> currentRun = new AtomicReference<>();
+    private final Object lock = new Object();
+    private OpenCodeAgentRun currentRun;
+    private boolean serverMayBeBusy;
+    private boolean closed;
 
-    public OpenCodeAgentSession(
-            String sessionId,
-            AgentSpec spec,
-            OpenCodeClient client,
-            Path workspaceDir,
-            LocationManager locationManager,
-            JvmMcpServer jvmMcpServer
-    ) {
-        this(sessionId, spec, client, workspaceDir, locationManager, jvmMcpServer, false);
-    }
-
-    public OpenCodeAgentSession(
-            String sessionId,
-            AgentSpec spec,
-            OpenCodeClient client,
-            Path workspaceDir,
-            LocationManager locationManager,
-            JvmMcpServer jvmMcpServer,
-            boolean deleteWorkspaceOnClose
-    ) {
-        this.deleteWorkspaceOnClose = deleteWorkspaceOnClose;
+    OpenCodeAgentSession(String sessionId, AgentSpec spec, OpenCodeClient client, OpenCodeWorkspace workspace,
+                         SessionOptions options, RunRegistry runs, Consumer<OpenCodeAgentSession> onClosed,
+                         boolean retireWorkspaceOnClose, RunOptions runOptions) {
+        this.runOptions = runOptions == null ? RunOptions.defaults() : runOptions;
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
         this.spec = Objects.requireNonNull(spec, "spec");
         this.client = Objects.requireNonNull(client, "client");
-        this.workspaceDir = Objects.requireNonNull(workspaceDir, "workspaceDir");
-        this.locationManager = Objects.requireNonNull(locationManager, "locationManager");
-        this.jvmMcpServer = jvmMcpServer;
+        this.workspace = Objects.requireNonNull(workspace, "workspace");
+        this.options = options == null ? SessionOptions.defaults() : options;
+        this.runs = Objects.requireNonNull(runs, "runs");
+        this.onClosed = Objects.requireNonNull(onClosed, "onClosed");
+        this.retireWorkspaceOnClose = retireWorkspaceOnClose;
     }
 
     @Override
@@ -73,55 +70,119 @@ public final class OpenCodeAgentSession implements AgentSession {
     }
 
     public Path workspaceDir() {
-        return workspaceDir;
+        return workspace.directory();
+    }
+
+    @Override
+    public Optional<AgentRun> activeRun() {
+        synchronized (lock) {
+            return currentRun == null || currentRun.result().isDone() ? Optional.empty() : Optional.of(currentRun);
+        }
     }
 
     @Override
     public AgentRun send(RunPrompt prompt, AgentEventListener listener) {
         Objects.requireNonNull(prompt, "prompt");
-
-        String runId = "run_" + UUID.randomUUID().toString().substring(0, 12);
-        OpenCodeAgentRun run = new OpenCodeAgentRun(
-                runId,
-                sessionId,
-                spec,
-                prompt,
-                listener,
-                client,
-                workspaceDir,
-                jvmMcpServer
-        );
-
-        currentRun.set(run);
+        OpenCodeAgentRun run;
+        synchronized (lock) {
+            if (closed) {
+                throw new IllegalStateException("Session " + sessionId + " is closed");
+            }
+            if (currentRun != null && !currentRun.result().isDone()) {
+                throw new SessionBusyException(sessionId,
+                        "Session " + sessionId + " is still running " + currentRun.runId());
+            }
+            String runId = "run_" + UUID.randomUUID().toString().substring(0, 12);
+            run = new OpenCodeAgentRun(runId, sessionId, spec, prompt, listener, client, workspace.directory(),
+                    workspace.toolServer(), runOptions.awaitingServerIdle(serverMayBeBusy));
+            currentRun = run;
+        }
+        if (workspace.toolServer() != null) {
+            // Discard a result a previous, unfinished run may have left behind.
+            workspace.toolServer().takeSubmittedResult(sessionId);
+        }
+        runs.register(run);
+        run.result().whenComplete((result, failure) -> afterRun(run, result));
         run.start();
         return run;
     }
 
+    private void afterRun(OpenCodeAgentRun run, AgentResult result) {
+        runs.unregister(run);
+        synchronized (lock) {
+            serverMayBeBusy = result == null || mayLeaveServerRunning(result);
+        }
+    }
+
+    private static boolean mayLeaveServerRunning(AgentResult result) {
+        return result.status() == RunStatus.CANCELLED || result.status() == RunStatus.PARTIAL
+                || result.failureCategory() == FailureCategory.TRANSPORT;
+    }
+
     @Override
-    public void close() {
-        OpenCodeAgentRun active = currentRun.getAndSet(null);
+    public void detach() {
+        if (!beginClose()) {
+            return;
+        }
+        OpenCodeAgentRun active = takeActiveRun();
+        if (active != null) {
+            active.detach();
+        }
+        release();
+    }
+
+    @Override
+    public void delete() {
+        if (!beginClose()) {
+            return;
+        }
+        OpenCodeAgentRun active = takeActiveRun();
         if (active != null) {
             active.cancel();
         }
-
-        // Delete session from server (cascades to child sub-agent sessions, F15)
         try {
+            // Deleting the root session cascades to its sub-agent sessions.
             client.sessions().delete(sessionId);
             log.debug("Deleted OpenCode session {}", sessionId);
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             log.debug("Session {} cleanup: {}", sessionId, e.getMessage());
         }
+        release();
+    }
 
-        // Evict location from server cache
-        locationManager.evictLocation(workspaceDir);
-
-        // Close in-JVM MCP server
-        if (jvmMcpServer != null) {
-            jvmMcpServer.close();
+    @Override
+    public void close() {
+        if (options.deleteOnClose()) {
+            delete();
+        } else {
+            detach();
         }
+    }
 
-        if (deleteWorkspaceOnClose) {
-            WorkspaceCleaner.deleteQuietly(workspaceDir);
+    /** Marks the session closed; {@code false} if it already was. */
+    private boolean beginClose() {
+        synchronized (lock) {
+            if (closed) {
+                return false;
+            }
+            closed = true;
+            return true;
+        }
+    }
+
+    private OpenCodeAgentRun takeActiveRun() {
+        synchronized (lock) {
+            OpenCodeAgentRun active = currentRun;
+            currentRun = null;
+            return active != null && !active.result().isDone() ? active : null;
+        }
+    }
+
+    private void release() {
+        workspace.release(this);
+        onClosed.accept(this);
+        if (retireWorkspaceOnClose && workspace.openSessionCount() == 0) {
+            workspace.retire();
         }
     }
 }

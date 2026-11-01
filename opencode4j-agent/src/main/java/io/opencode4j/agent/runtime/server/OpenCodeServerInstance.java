@@ -28,6 +28,7 @@ public final class OpenCodeServerInstance implements AutoCloseable {
     private final String url;
     private final Path cleanRoomDir;
     private final OpenCodeConfig config;
+    private Thread shutdownHook;
 
     public OpenCodeServerInstance(
             Process process,
@@ -70,8 +71,30 @@ public final class OpenCodeServerInstance implements AutoCloseable {
         return OpenCodeClient.create(config);
     }
 
+    /** Registers a JVM shutdown hook that stops the process; {@link #close()} removes it again. */
+    synchronized void registerShutdownHook() {
+        if (shutdownHook == null) {
+            shutdownHook = new Thread(this::stopProcess, "opencode-server-shutdown");
+            Runtime.getRuntime().addShutdownHook(shutdownHook);
+        }
+    }
+
     @Override
     public void close() {
+        synchronized (this) {
+            if (shutdownHook != null) {
+                try {
+                    Runtime.getRuntime().removeShutdownHook(shutdownHook);
+                } catch (IllegalStateException alreadyShuttingDown) {
+                    // The hook is running or about to run; it stops the process itself.
+                }
+                shutdownHook = null;
+            }
+        }
+        stopProcess();
+    }
+
+    private void stopProcess() {
         if (!process.isAlive()) {
             cleanUpDirectory();
             return;

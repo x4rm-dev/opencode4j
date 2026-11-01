@@ -1,0 +1,23 @@
+{
+ "id": "evt_192fdfc530022rdLDHYfgkW06P",
+ "created": 1793467481171,
+ "type": "session.tool.called",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "assistantMessageID": "msg_192fdfc4a00134ceS0BiBx3TV4",
+  "id": "call_1",
+  "input": {
+   "command": "echo hi",
+   "description": "say hi"
+  },
+  "executed": false
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 19,
+  "version": 1
+ }
+}

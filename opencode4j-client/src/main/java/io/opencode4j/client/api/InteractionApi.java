@@ -24,7 +24,9 @@ public final class InteractionApi {
      * Answers a permission request.
      *
      * @param message an optional note passed back to the agent, or {@code null}
+     * @deprecated use {@link PermissionApi#reply(String, String, PermissionDecision, String)}
      */
+    @Deprecated(since = "0.2.0")
     public void replyPermission(String sessionId, String requestId, PermissionDecision decision, String message) {
         transport.send(
                 HttpMethod.POST,
@@ -47,7 +49,12 @@ public final class InteractionApi {
         transport.send(HttpMethod.DELETE, path(sessionId, "/form/", formId), null, Void.class);
     }
 
-    /** Convenience for {@link #replyPermission} without a note. */
+    /**
+     * Convenience for {@link #replyPermission} without a note.
+     *
+     * @deprecated use {@link PermissionApi#reply(String, String, PermissionDecision, String)}
+     */
+    @Deprecated(since = "0.2.0")
     public void replyPermission(String sessionId, String requestId, PermissionDecision decision) {
         replyPermission(sessionId, requestId, decision, null);
     }

@@ -1,0 +1,19 @@
+{
+ "id": "evt_192fdfc52001xLzM6n9lcidpgU",
+ "created": 1793467481170,
+ "type": "session.tool.input.started",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "assistantMessageID": "msg_192fdfc4a00134ceS0BiBx3TV4",
+  "id": "call_1",
+  "name": "shell"
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 17,
+  "version": 1
+ }
+}

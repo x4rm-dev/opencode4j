@@ -27,6 +27,7 @@ public final class OpenCodeConfig {
     private final long sseReconnectBaseDelayMs;
     private final long sseReconnectMaxDelayMs;
     private final int sseMaxRetries;
+    private final boolean allowInsecureRemote;
 
     private OpenCodeConfig(Builder builder) {
         this.baseUrl = builder.baseUrl;
@@ -41,6 +42,26 @@ public final class OpenCodeConfig {
         this.sseReconnectBaseDelayMs = builder.sseReconnectBaseDelayMs;
         this.sseReconnectMaxDelayMs = builder.sseReconnectMaxDelayMs;
         this.sseMaxRetries = builder.sseMaxRetries;
+        this.allowInsecureRemote = builder.allowInsecureRemote;
+        if (hasServePassword() && !allowInsecureRemote && sendsCredentialsInClear(baseUrl)) {
+            throw new IllegalArgumentException("Refusing to send the server password over plain HTTP to " + baseUrl
+                    + "; use https, a loopback address, or allowInsecureRemote(true)");
+        }
+    }
+
+    /** Whether {@code url} is plain HTTP to a host other than this machine. */
+    static boolean sendsCredentialsInClear(String url) {
+        java.net.URI uri;
+        try {
+            uri = java.net.URI.create(url);
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+        if (!"http".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null) {
+            return false;
+        }
+        String host = uri.getHost().toLowerCase(java.util.Locale.ROOT);
+        return !(host.equals("localhost") || host.equals("::1") || host.equals("[::1]") || host.startsWith("127."));
     }
 
     public boolean hasServePassword() {
@@ -67,6 +88,7 @@ public final class OpenCodeConfig {
         private long sseReconnectBaseDelayMs = 1_000;
         private long sseReconnectMaxDelayMs = 30_000;
         private int sseMaxRetries = 10;
+        private boolean allowInsecureRemote;
 
         private Builder(String baseUrl) {
             if (baseUrl == null || baseUrl.isBlank()) {
@@ -138,6 +160,15 @@ public final class OpenCodeConfig {
 
         public Builder sseMaxRetries(int sseMaxRetries) {
             this.sseMaxRetries = sseMaxRetries;
+            return this;
+        }
+
+        /**
+         * Allows sending the server password over plain HTTP to a non-loopback host. Off by default; only for
+         * networks where the traffic cannot be observed.
+         */
+        public Builder allowInsecureRemote(boolean allowInsecureRemote) {
+            this.allowInsecureRemote = allowInsecureRemote;
             return this;
         }
 

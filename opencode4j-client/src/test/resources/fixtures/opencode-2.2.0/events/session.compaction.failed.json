@@ -1,0 +1,32 @@
+{
+ "id": "evt_192fe4b85002mf1KwWo8pMIgrC",
+ "created": 1793467501445,
+ "type": "session.compaction.failed",
+ "location": {
+  "directory": "/work"
+ },
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "reason": "manual",
+  "inputID": "msg_192fe4b6c001uxmt30eFy2iFka",
+  "error": {
+   "type": "compaction.failed",
+   "message": "Compaction summary did not match the required template"
+  },
+  "cost": 0,
+  "tokens": {
+   "input": 22,
+   "output": 6,
+   "reasoning": 0,
+   "cache": {
+    "read": 0,
+    "write": 0
+   }
+  }
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 30,
+  "version": 1
+ }
+}

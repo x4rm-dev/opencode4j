@@ -1,8 +1,11 @@
 package io.opencode4j.event;
 
+import io.opencode4j.model.ErrorInfo;
+
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opencode4j.model.ModelRef;
 import io.opencode4j.model.TokenUsage;
 import io.opencode4j.model.form.FormField;
 import java.util.ArrayList;
@@ -20,9 +23,39 @@ final class EventParsers {
     }
 
     /** Returns {@code null} for housekeeping events the caller should not see. */
-    static OpenCodeEvent parse(String type, JsonNode data, String rawJson) {
+    static OpenCodeEvent parse(String type, JsonNode root, String rawJson) {
+        JsonNode data = root.path("data");
         return switch (type) {
-            case "server.connected", "server.heartbeat" -> null;
+            case "server.connected" -> new ServerConnected();
+            // OpenCode 2.0.x sent heartbeats as events; 2.2 sends SSE comments. Neither is for consumers.
+            case "server.heartbeat" -> null;
+            case "session.deleted" -> new SessionDeleted(text(data, "sessionID"));
+            case "session.renamed" -> new SessionRenamed(text(data, "sessionID"), text(data, "title"));
+            case "session.metadata.updated" -> new SessionMetadataUpdated(
+                    text(data, "sessionID"), object(data.get("metadata")));
+            case "session.usage.updated" -> new SessionUsageUpdated(text(data, "sessionID"), usage(data));
+            case "session.idle" -> new SessionIdle(text(data, "sessionID"));
+            case "session.status" -> sessionStatus(data);
+            case "session.retry.scheduled" -> new RetryScheduled(
+                    text(data, "sessionID"), text(data, "assistantMessageID"), integer(data, "attempt"),
+                    data.path("at").asLong(0), errorInfo(data.get("error")));
+            case "mcp.status.changed" -> new McpStatusChanged(text(data, "server"));
+            case "session.step.started" -> new StepStarted(
+                    text(data, "sessionID"), text(data, "assistantMessageID"), text(data, "agent"),
+                    modelRef(data.get("model")));
+            case "session.text.ended" -> new TextEnded(
+                    text(data, "sessionID"), text(data, "assistantMessageID"), integer(data, "ordinal"),
+                    text(data, "text"));
+            case "session.compaction.started" -> new CompactionStarted(
+                    text(data, "sessionID"), text(data, "reason"), text(data, "inputID"));
+            case "session.compaction.ended" -> new CompactionEnded(
+                    text(data, "sessionID"), text(data, "reason"), text(data, "text"), usage(data));
+            case "session.compaction.failed" -> new CompactionFailed(
+                    text(data, "sessionID"), text(data, "reason"), text(data, "inputID"),
+                    errorInfo(data.get("error")), usage(data));
+            case "permission.replied" -> new PermissionReplied(
+                    text(data, "sessionID"), text(data, "requestID"), text(data, "reply"));
+            case "location.shutdown" -> new LocationShutdown(text(root.path("location"), "directory"));
             case "session.created" -> new SessionCreated(
                     text(data, "sessionID"), text(data, "parentID"), text(data, "title"));
             case "session.text.delta" -> new TextDelta(
@@ -53,7 +86,7 @@ final class EventParsers {
             case "session.execution.succeeded" -> new ExecutionEnded(
                     text(data, "sessionID"), ExecutionOutcome.SUCCEEDED, null);
             case "session.execution.failed" -> new ExecutionEnded(
-                    text(data, "sessionID"), ExecutionOutcome.FAILED, errorMessage(data));
+                    text(data, "sessionID"), ExecutionOutcome.FAILED, errorMessage(data), errorInfo(data.get("error")));
             case "session.execution.interrupted" -> new ExecutionEnded(
                     text(data, "sessionID"), ExecutionOutcome.INTERRUPTED, text(data, "reason"));
             case "permission.asked" -> permissionAsked(data);
@@ -143,6 +176,43 @@ final class EventParsers {
         return message + " [" + detail + "]";
     }
 
+    private static OpenCodeEvent sessionStatus(JsonNode data) {
+        JsonNode status = data.path("status");
+        boolean retry = "retry".equals(text(status, "type"));
+        return new SessionStatusChanged(
+                text(data, "sessionID"),
+                text(status, "type"),
+                retry && status.has("attempt") ? status.get("attempt").asInt() : null,
+                retry ? text(status, "message") : null,
+                retry && status.has("next") ? status.get("next").asLong() : null);
+    }
+
+    /** Reads a {@code Session.StructuredError}, or {@code null} if absent. */
+    static ErrorInfo errorInfo(JsonNode error) {
+        if (error == null || error.isNull() || error.isMissingNode()) {
+            return null;
+        }
+        if (error.isTextual()) {
+            return new ErrorInfo(null, error.asText(), null, null);
+        }
+        JsonNode status = error.get("status");
+        JsonNode retryAfter = error.get("retryAfterMs");
+        return new ErrorInfo(
+                text(error, "type"),
+                text(error, "message"),
+                status != null && status.canConvertToInt() ? status.asInt() : null,
+                retryAfter != null && retryAfter.canConvertToLong() ? retryAfter.asLong() : null);
+    }
+
+    private static ModelRef modelRef(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
+        String id = text(node, "id");
+        String provider = text(node, "providerID");
+        return id == null || provider == null ? null : new ModelRef(id, provider, text(node, "variant"));
+    }
+
     private static Map<String, Object> object(JsonNode node) {
         if (node == null || !node.isObject()) {
             return Map.of();
@@ -154,7 +224,7 @@ final class EventParsers {
         return node.path(field).asInt(0);
     }
 
-    private static String text(JsonNode node, String field) {
+    static String text(JsonNode node, String field) {
         JsonNode value = node == null ? null : node.get(field);
         return value == null || value.isNull() ? null : value.asText();
     }

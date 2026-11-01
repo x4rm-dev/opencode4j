@@ -150,7 +150,7 @@ class WorkspaceWriterTest {
                 "https://llm.example.test/v1",
                 () -> Map.of("Authorization", "token-" + issued.incrementAndGet()),
                 List.of(ProviderSpec.ModelSpec.multimodal("global:GPT", 128_000, 8_000),
-                        new ProviderSpec.ModelSpec("text-only", null, true, false, 0, 0)));
+                        ProviderSpec.ModelSpec.toolCalling("text-only", 32_000, 4_000).withCost(0.5, 1.5)));
         AgentSpec spec = AgentSpec.builder("boss").build();
 
         JsonNode first = mapper.readTree(writer.write(tempDir.resolve("a"), spec, null, List.of(provider))
@@ -167,14 +167,16 @@ class WorkspaceWriterTest {
 
         JsonNode multimodal = node.path("models").path("global:GPT");
         assertTrue(multimodal.path("tool_call").asBoolean());
-        assertTrue(multimodal.path("attachment").asBoolean());
+        assertFalse(multimodal.has("attachment"), "OpenCode 2.2 does not support the attachment key");
         assertEquals("image", multimodal.path("modalities").path("input").get(1).asText());
         assertEquals(128_000, multimodal.path("limit").path("context").asInt());
 
         JsonNode textOnly = node.path("models").path("text-only");
         assertEquals("text-only", textOnly.path("name").asText());
-        assertFalse(textOnly.path("attachment").asBoolean());
-        assertFalse(textOnly.has("limit"));
+        assertEquals("text", textOnly.path("modalities").path("input").get(0).asText());
+        assertEquals(32_000, textOnly.path("limit").path("context").asInt());
+        assertEquals(0.5, textOnly.path("cost").path("input").asDouble());
+        assertEquals(1.5, textOnly.path("cost").path("output").asDouble());
     }
 
     @Test

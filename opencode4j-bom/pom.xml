@@ -7,7 +7,7 @@
     <parent>
         <groupId>dev.x4rm.opencode4j</groupId>
         <artifactId>opencode4j</artifactId>
-        <version>0.1.0-alpha.2</version>
+        <version>0.2.0</version>
     </parent>
 
     <artifactId>opencode4j-bom</artifactId>
@@ -37,6 +37,11 @@
             <dependency>
                 <groupId>dev.x4rm.opencode4j</groupId>
                 <artifactId>opencode4j-guice</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.x4rm.opencode4j</groupId>
+                <artifactId>opencode4j-testkit</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

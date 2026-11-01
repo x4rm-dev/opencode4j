@@ -24,4 +24,12 @@ public record McpRemoteServerConfig(
         Objects.requireNonNull(url, "url");
         headers = Immutable.map(headers);
     }
+
+    /** Header names only: the server reports resolved values, which are often credentials. */
+    @Override
+    public String toString() {
+        return "McpRemoteServerConfig[url=" + url + ", headers=" + headers.keySet() + ", oauth=" + oauth
+                + ", disabled=" + disabled + ", codemode=" + codemode + ", timeout=" + timeout
+                + ", protocol=" + protocol + "]";
+    }
 }

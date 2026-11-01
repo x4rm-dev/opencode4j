@@ -2,7 +2,8 @@ package io.opencode4j.agent.runtime.run;
 
 import io.opencode4j.client.OpenCodeClient;
 import io.opencode4j.event.ExecutionEnded;
-import io.opencode4j.event.ExecutionOutcome;
+import io.opencode4j.event.ExecutionStarted;
+import io.opencode4j.event.StepStarted;
 import io.opencode4j.event.OpenCodeEvent;
 import io.opencode4j.event.PermissionAsked;
 import io.opencode4j.event.ReasoningDelta;
@@ -17,6 +18,10 @@ import io.opencode4j.event.ToolSucceeded;
 import io.opencode4j.model.PermissionDecision;
 import io.opencode4j.runtime.AgentEventListener;
 import io.opencode4j.runtime.AgentResult;
+import io.opencode4j.runtime.FailureCategory;
+import io.opencode4j.runtime.RunStatus;
+import io.opencode4j.runtime.TextRedactor;
+import io.opencode4j.runtime.event.StepStartedEvent;
 import io.opencode4j.runtime.ToolExecution;
 import io.opencode4j.runtime.event.AgentEvent;
 import io.opencode4j.runtime.event.DelegationCompletedEvent;
@@ -29,8 +34,10 @@ import io.opencode4j.runtime.event.ToolCallCompletedEvent;
 import io.opencode4j.runtime.event.ToolCallFailedEvent;
 import io.opencode4j.runtime.event.ToolCallStartedEvent;
 import io.opencode4j.runtime.spec.AgentSpec;
+import java.util.HashSet;
 import java.util.Objects;
-import java.util.function.BiConsumer;
+import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.BooleanSupplier;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
@@ -47,23 +54,34 @@ final class RunEventProcessor {
     private final OpenCodeClient client;
     private final AgentEventListener listener;
     private final BooleanSupplier terminal;
-    private final BiConsumer<ExecutionOutcome, String> finish;
-    private final Runnable cancel;
+    private final Consumer<RunEnd> rootEnded;
+    private final Consumer<RunEnd> limitReached;
     private final RunSessionHierarchy hierarchy;
     private final RunToolTracker tools = new RunToolTracker();
     private final RunAccounting accounting = new RunAccounting();
+    private String reconciledText;
+    private boolean rootStarted;
+    private final TextRedactor redactor;
+    private final Set<String> runningChildren = new HashSet<>();
 
     RunEventProcessor(String runId, String rootSessionId, AgentSpec spec, OpenCodeClient client,
                       AgentEventListener listener, BooleanSupplier terminal,
-                      BiConsumer<ExecutionOutcome, String> finish, Runnable cancel) {
+                      Consumer<RunEnd> rootEnded, Consumer<RunEnd> limitReached) {
+        this(runId, rootSessionId, spec, client, listener, terminal, rootEnded, limitReached, TextRedactor.none());
+    }
+
+    RunEventProcessor(String runId, String rootSessionId, AgentSpec spec, OpenCodeClient client,
+                      AgentEventListener listener, BooleanSupplier terminal,
+                      Consumer<RunEnd> rootEnded, Consumer<RunEnd> limitReached, TextRedactor redactor) {
+        this.redactor = redactor == null ? TextRedactor.none() : redactor;
         this.runId = Objects.requireNonNull(runId, "runId");
         this.rootSessionId = Objects.requireNonNull(rootSessionId, "rootSessionId");
         this.spec = Objects.requireNonNull(spec, "spec");
         this.client = Objects.requireNonNull(client, "client");
         this.listener = listener;
         this.terminal = Objects.requireNonNull(terminal, "terminal");
-        this.finish = Objects.requireNonNull(finish, "finish");
-        this.cancel = Objects.requireNonNull(cancel, "cancel");
+        this.rootEnded = Objects.requireNonNull(rootEnded, "rootEnded");
+        this.limitReached = Objects.requireNonNull(limitReached, "limitReached");
         hierarchy = new RunSessionHierarchy(rootSessionId, spec.name());
     }
 
@@ -73,6 +91,9 @@ final class RunEventProcessor {
         }
         if (event instanceof SessionCreated created) {
             hierarchy.register(created);
+            if (hierarchy.get(created.sessionId()) != null && !rootSessionId.equals(created.sessionId())) {
+                childStarted(created.sessionId());
+            }
             return;
         }
         String sid = switch (event) {
@@ -86,6 +107,8 @@ final class RunEventProcessor {
             case StepFailed e -> e.sessionId();
             case PermissionAsked e -> e.sessionId();
             case ExecutionEnded e -> e.sessionId();
+            case ExecutionStarted e -> e.sessionId();
+            case StepStarted e -> e.sessionId();
             default -> null;
         };
         val identity = hierarchy.get(sid);
@@ -130,34 +153,100 @@ final class RunEventProcessor {
                             case ALWAYS -> PermissionDecision.ALWAYS;
                             case REJECT -> PermissionDecision.REJECT;
                         };
-                        client.interactions().replyPermission(sid, e.id(), decision, reply.message());
+                        client.permissions().reply(sid, e.id(), decision, reply.message());
                     }));
-            case ExecutionEnded e -> {
+            case ExecutionStarted e -> {
                 if (rootSessionId.equals(sid)) {
-                    finish.accept(e.outcome(), e.detail());
+                    rootStarted = true;
                 }
+            }
+            case StepStarted e -> emit(new StepStartedEvent(runId, sid, name, path, now, e.messageId(),
+                    e.model() == null ? null : e.model().toString()));
+            case ExecutionEnded e -> {
+                if (!rootSessionId.equals(sid)) {
+                    runningChildren.remove(sid);
+                    return;
+                }
+                if (!rootStarted) {
+                    // An execution this run never saw start belongs to an earlier turn, for example one that
+                    // was cancelled locally while the server was still finishing it.
+                    log.debug("Run {} ignores {} of an execution it did not start", runId, e.type());
+                    return;
+                }
+                rootEnded.accept(RunEnd.of(e));
             }
             default -> { }
         }
     }
 
+    /** The root agent's answer: the text recovered from history after a gap, otherwise the streamed text. */
     String text() {
-        return accounting.rootText.toString();
+        return reconciledText != null ? reconciledText : accounting.rootText.toString();
     }
 
-    AgentResult result(boolean success, String reason, Integer maxSteps, Object typedResult) {
+    /** The identity of a session in this run's tree, or {@code null}. */
+    RunSessionHierarchy.Identity identity(String sessionId) {
+        return hierarchy.get(sessionId);
+    }
+
+    /** Replaces the streamed text with the authoritative text read from the session history. */
+    void useReconciledText(String text) {
+        reconciledText = text;
+    }
+
+    AgentResult result(RunEnd end, Integer maxSteps, Object typedResult) {
+        boolean success = end.status() == RunStatus.SUCCEEDED;
         return AgentResult.builder(runId, rootSessionId)
-                .success(success).text(text()).errorMessage(success ? null : reason)
+                .status(end.status()).failureCategory(end.category()).retryAfterMs(end.retryAfterMs())
+                .text(redactor.redact(text())).errorMessage(success ? null : redactor.redact(end.reason()))
                 .typedResult(typedResult)
                 .truncated(success && maxSteps != null && accounting.rootSteps >= maxSteps)
                 .tokenUsage(accounting.usage).totalCost(accounting.cost)
-                .toolExecutions(accounting.tools).steps(accounting.steps).build();
+                .toolExecutions(accounting.tools.stream().map(tool -> new ToolExecution(tool.callId(), tool.toolName(),
+                        tool.agentPath(), redactor.redact(tool.arguments()), redactor.redact(tool.result()),
+                        tool.isError(), tool.durationMs())).toList())
+                .steps(accounting.steps).build();
+    }
+
+    /** Enforces {@code RunLimits.maxParallelChildren} by interrupting a child that exceeds it. */
+    private void childStarted(String childSessionId) {
+        runningChildren.add(childSessionId);
+        Integer limit = spec.limits().maxParallelChildren();
+        if (limit != null && limit > 0 && runningChildren.size() > limit) {
+            log.warn("Run {} has {} sub-agent sessions running, above the limit of {}; interrupting {}",
+                    runId, runningChildren.size(), limit, childSessionId);
+            runningChildren.remove(childSessionId);
+            Thread.ofVirtual().name("opencode-child-limit").start(() -> {
+                try {
+                    client.sessions().interrupt(childSessionId);
+                } catch (RuntimeException e) {
+                    log.warn("Could not interrupt sub-agent session {}: {}", childSessionId, e.getMessage());
+                }
+            });
+        }
+    }
+
+    /** Steps and tool calls counted so far, for metrics. */
+    int stepCount() {
+        return accounting.steps.size();
+    }
+
+    int toolCallCount() {
+        return accounting.tools.size();
+    }
+
+    io.opencode4j.runtime.TokenUsage usage() {
+        return accounting.usage;
+    }
+
+    double cost() {
+        return accounting.cost;
     }
 
     void emit(AgentEvent event) {
         if (listener != null) {
             try {
-                listener.onEvent(event);
+                listener.onEvent(EventRedaction.apply(event, redactor));
             } catch (Exception e) {
                 log.warn("AgentEventListener threw an exception handling event {}: {}",
                         event.getClass().getSimpleName(), e.getMessage());
@@ -190,7 +279,8 @@ final class RunEventProcessor {
         if (!terminal.getAsBoolean() && ((limits.maxCost() != null && accounting.cost >= limits.maxCost())
                 || (limits.maxTokens() != null && accounting.usage.total() >= limits.maxTokens()))) {
             log.warn("Run {} exceeded budget limits; interrupting", runId);
-            cancel.run();
+            limitReached.accept(RunEnd.partial(FailureCategory.BUDGET, "Budget exhausted: tokens="
+                    + accounting.usage.total() + ", cost=" + accounting.cost));
         }
     }
 }

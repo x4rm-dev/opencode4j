@@ -40,6 +40,27 @@ class EventApiTest extends MockServerTest {
     }
 
     @Test
+    void readsAssembledFramesAndTracksLastEventId() throws Exception {
+        // Given: a payload split over two data lines, then a stream end mid-frame
+        server.enqueue(sse("text/event-stream",
+                FRAME + "id: 2\ndata: {\"type\":\ndata: \"server.heartbeat\"}\n\ndata: partial"));
+
+        // When
+        try (SseStream stream = client.events().open()) {
+            var first = stream.nextFrame();
+            var second = stream.nextFrame();
+            var end = stream.nextFrame();
+
+            // Then
+            assertEquals(new io.opencode4j.event.SseFrame("1", "message", "{\"type\":\"server.connected\"}", null),
+                    first);
+            assertEquals("{\"type\":\n\"server.heartbeat\"}", second.data());
+            assertEquals("2", stream.lastEventId());
+            assertNull(end);
+        }
+    }
+
+    @Test
     void acceptsContentTypeParameters() throws Exception {
         // Given
         server.enqueue(sse("text/event-stream; charset=utf-8", FRAME));

@@ -1,0 +1,13 @@
+{
+ "id": "evt_192fdfb6700131Q2cXiN3bkKbC",
+ "created": 1793467480935,
+ "type": "session.execution.started",
+ "data": {
+  "sessionID": "ses_e6d020593ffe4q46YQ96agDiQ0"
+ },
+ "durable": {
+  "aggregateID": "ses_e6d020593ffe4q46YQ96agDiQ0",
+  "seq": 2,
+  "version": 1
+ }
+}

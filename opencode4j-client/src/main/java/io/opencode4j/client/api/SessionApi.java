@@ -5,17 +5,24 @@ import io.opencode4j.client.HttpMethod;
 import io.opencode4j.client.OpenCodeTransport;
 import io.opencode4j.model.CreateSessionRequest;
 import io.opencode4j.model.ModelRef;
+import io.opencode4j.model.Page;
+import io.opencode4j.model.PageRequest;
+import io.opencode4j.model.PromptReceipt;
 import io.opencode4j.model.Session;
+import io.opencode4j.model.SessionQuery;
 import io.opencode4j.model.SessionRevert;
+import io.opencode4j.model.SessionUpdate;
 import io.opencode4j.model.SnapshotFileDiff;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /** Creates, inspects and controls sessions. */
 public final class SessionApi {
 
     private static final String SESSION_PATH = "/api/session";
+    private static final TypeReference<List<Session>> SESSIONS = new TypeReference<>() { };
 
     private final OpenCodeTransport transport;
 
@@ -37,6 +44,7 @@ public final class SessionApi {
      * Lists the newest sessions (the server's first page, 50 by default).
      *
      * @param directory only sessions in this directory, or {@code null} for all
+     * @see #list(SessionQuery, PageRequest) to page through every session
      */
     public List<Session> list(String directory) {
         return transport.send(
@@ -44,6 +52,57 @@ public final class SessionApi {
                 transport.withDirectory(SESSION_PATH, directory),
                 null,
                 new TypeReference<List<Session>>() { });
+    }
+
+    /**
+     * Lists one page of sessions matching {@code query}, newest first unless the request says otherwise.
+     */
+    public Page<Session> list(SessionQuery query, PageRequest page) {
+        SessionQuery filter = query == null ? SessionQuery.all() : query;
+        StringBuilder path = new StringBuilder(SESSION_PATH);
+        if (filter.directory() != null && !filter.directory().isBlank()) {
+            Pages.append(path, "directory", filter.directory(), transport);
+        }
+        if (filter.parentId() != null) {
+            Pages.append(path, "parentID", filter.parentId(), transport);
+        } else if (filter.rootsOnly()) {
+            Pages.append(path, "parentID", "null", transport);
+        }
+        if (filter.archived() != null) {
+            Pages.append(path, "archived", filter.archived().toString(), transport);
+        }
+        if (filter.search() != null && !filter.search().isBlank()) {
+            Pages.append(path, "search", filter.search(), transport);
+        }
+        return Pages.get(transport, Pages.withPage(transport, path.toString(), page), SESSIONS);
+    }
+
+    /**
+     * Applies {@code update} to a session: title, metadata, session permissions or archive state.
+     *
+     * @throws io.opencode4j.OpenCodeNotFoundException if the session does not exist
+     */
+    public void update(String sessionId, SessionUpdate update) {
+        transport.send(HttpMethod.PATCH, sessionPath(sessionId), Objects.requireNonNull(update, "update"),
+                Void.class);
+    }
+
+    /**
+     * Queues a manual context compaction. It runs as an execution of its own: progress arrives as
+     * {@code session.compaction.*} events and the result as a {@code compaction} history entry.
+     *
+     * @return the accepted inbox item
+     * @throws io.opencode4j.OpenCodeConflictException if the session cannot compact now
+     */
+    public PromptReceipt compact(String sessionId) {
+        return transport.send(HttpMethod.POST, sessionPath(sessionId) + "/compact", Map.of(), PromptReceipt.class);
+    }
+
+    /** Ids of the sessions that are currently running an execution, across all locations. */
+    public Set<String> activeSessionIds() {
+        Map<String, Object> active = transport.send(HttpMethod.GET, SESSION_PATH + "/active", null,
+                new TypeReference<Map<String, Object>>() { });
+        return active == null ? Set.of() : Set.copyOf(active.keySet());
     }
 
     /** Lists the sessions spawned by {@code parentSessionId}, for example by sub-agents. */

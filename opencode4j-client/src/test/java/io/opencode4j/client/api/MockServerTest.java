@@ -52,6 +52,17 @@ abstract class MockServerTest {
         return request;
     }
 
+    /** A JSON response whose body is the fixture {@code name} captured from OpenCode 2.2.0. */
+    protected MockResponse fixture(String name) {
+        String path = "/fixtures/opencode-2.2.0/api/" + name + ".json";
+        try (java.io.InputStream stream = MockServerTest.class.getResourceAsStream(path)) {
+            assertNotNull(stream, "missing fixture " + path);
+            return json(new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
     protected void assertRequest(String method, String path, String body) throws InterruptedException {
         RecordedRequest request = takeRequest();
         assertEquals(method, request.getMethod());

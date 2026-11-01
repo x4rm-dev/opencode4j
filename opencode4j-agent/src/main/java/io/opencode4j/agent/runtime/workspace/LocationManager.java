@@ -1,18 +1,22 @@
 package io.opencode4j.agent.runtime.workspace;
 
+import io.opencode4j.OpenCodeAuthException;
 import io.opencode4j.OpenCodeException;
 import io.opencode4j.client.HttpMethod;
 import io.opencode4j.client.OpenCodeClient;
 import io.opencode4j.config.EnvironmentVariables;
 import io.opencode4j.model.AgentSummary;
+import io.opencode4j.model.mcp.McpConnected;
+import io.opencode4j.model.mcp.McpPending;
+import io.opencode4j.model.mcp.McpServer;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.locks.LockSupport;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,6 +65,7 @@ public final class LocationManager {
      * @param expectedAgents set of expected agent names/IDs
      * @param timeout        maximum duration to wait
      * @throws IllegalStateException if the agents do not appear before timeout
+     * @throws OpenCodeAuthException if the server rejects the credentials
      */
     public void warmLocation(
             Path canonicalDir,
@@ -78,10 +83,66 @@ public final class LocationManager {
             if (pollLocation(dirStr, expectedAgents, state)) {
                 return;
             }
-            LockSupport.parkNanos(POLL_INTERVAL.toNanos());
+            Thread.sleep(POLL_INTERVAL.toMillis());
         }
 
         throw warmupFailure(dirStr, expectedAgents, effectiveTimeout, state);
+    }
+
+    /**
+     * Waits until each named MCP server of the location has settled. OpenCode connects MCP servers in the
+     * background, so a prompt sent right after warm-up could otherwise run without their tools.
+     *
+     * <p>Servers that fail, need authentication or are disabled stop the wait for themselves and are reported in
+     * the result, so one unavailable data source does not block the workspace. If the server cannot report MCP
+     * status, the wait is skipped.</p>
+     *
+     * @return servers that did not connect, mapped to their last status (or {@code "timeout"})
+     */
+    public Map<String, String> awaitMcpServers(Path canonicalDir, Set<String> serverNames, Duration timeout)
+            throws InterruptedException {
+        Objects.requireNonNull(canonicalDir, "canonicalDir");
+        if (serverNames == null || serverNames.isEmpty()) {
+            return Map.of();
+        }
+        long deadline = System.nanoTime() + (timeout == null ? DEFAULT_WARMUP_TIMEOUT : timeout).toNanos();
+        Map<String, String> unsettled = new java.util.LinkedHashMap<>();
+        serverNames.forEach(name -> unsettled.put(name, "pending"));
+        Map<String, String> failed = new java.util.LinkedHashMap<>();
+        while (!unsettled.isEmpty()) {
+            List<McpServer> servers;
+            try {
+                servers = client.mcp().list(canonicalDir.toString());
+            } catch (OpenCodeAuthException e) {
+                throw e;
+            } catch (OpenCodeException e) {
+                log.debug("MCP status unavailable for {}; not waiting for servers: {}", canonicalDir, e.getMessage());
+                return Map.of();
+            }
+            for (McpServer server : servers == null ? List.<McpServer>of() : servers) {
+                if (!unsettled.containsKey(server.name())) {
+                    continue;
+                }
+                switch (server.status()) {
+                    case McpConnected connected -> unsettled.remove(server.name());
+                    case McpPending pending -> { }
+                    case null -> { }
+                    default -> {
+                        unsettled.remove(server.name());
+                        failed.put(server.name(), server.status().getClass().getSimpleName());
+                    }
+                }
+            }
+            if (unsettled.isEmpty() || System.nanoTime() > deadline) {
+                break;
+            }
+            Thread.sleep(POLL_INTERVAL.toMillis());
+        }
+        unsettled.keySet().forEach(name -> failed.put(name, "timeout"));
+        if (!failed.isEmpty()) {
+            log.warn("MCP servers of {} did not connect: {}", canonicalDir, failed);
+        }
+        return failed;
     }
 
     private boolean pollLocation(String directory, Set<String> expectedAgents, WarmupState state) {
@@ -95,13 +156,12 @@ public final class LocationManager {
             }
             log.trace("Warmup attempt {} on {}: visible={}, expected={}",
                     state.attempts, directory, state.lastSeen, expectedAgents);
+        } catch (OpenCodeAuthException e) {
+            // Retrying cannot fix credentials; surface the typed failure immediately.
+            log.warn("OpenCode server rejected credentials during warm-up (HTTP {}); verify {}",
+                    e.statusCode(), EnvironmentVariables.OPENCODE_SERVER_PASSWORD);
+            throw e;
         } catch (OpenCodeException e) {
-            switch (e.statusCode()) {
-                case 401 -> throw new IllegalStateException(
-                        "Authentication failed connecting to OpenCode server (HTTP 401): please verify "
-                                + EnvironmentVariables.OPENCODE_SERVER_PASSWORD, e);
-                case 403 -> throw new IllegalStateException("Access forbidden by OpenCode server (HTTP 403)", e);
-            }
             state.lastException = e;
             log.trace("Warmup poll failed on attempt {}: {}", state.attempts, e.getMessage());
         }
