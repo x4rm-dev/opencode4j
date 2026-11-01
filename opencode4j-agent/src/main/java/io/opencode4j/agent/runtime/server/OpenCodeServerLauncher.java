@@ -9,8 +9,10 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -30,8 +32,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Launches an isolated {@code opencode serve} subprocess in a clean-room environment,
- * capturing the dynamic port and generated authentication password from stdout.
+ * Launches an {@code opencode serve} subprocess for development and tests, optionally in a clean-room
+ * environment, capturing the dynamic port and the generated password from stdout unless the password is given.
+ *
+ * <p>In production run OpenCode as its own container and connect to it; this launcher does not supervise or
+ * restart the process.</p>
  */
 public final class OpenCodeServerLauncher {
 
@@ -58,15 +63,25 @@ public final class OpenCodeServerLauncher {
     private final boolean cleanRoom;
     private final Duration startupTimeout;
     private final Map<String, String> environment;
+    private final boolean copyHostAuth;
 
     public OpenCodeServerLauncher(String binaryPath, int port, boolean cleanRoom, Duration startupTimeout) {
-        this(binaryPath, port, cleanRoom, startupTimeout, null);
+        this(binaryPath, port, cleanRoom, startupTimeout, null, false);
+    }
+
+    public OpenCodeServerLauncher(String binaryPath, int port, boolean cleanRoom, Duration startupTimeout,
+                                  Map<String, String> environment) {
+        this(binaryPath, port, cleanRoom, startupTimeout, environment, false);
     }
 
     /**
-     * @param environment extra environment variables for the spawned server process (for example
-     *                    {@code NODE_TLS_REJECT_UNAUTHORIZED=0} for an endpoint with an internal CA); applied
-     *                    after the launcher's own variables, so they take precedence
+     * @param environment  extra environment variables for the spawned server process (for example provider
+     *                     credentials referenced as {@code {env:...}}, or {@code OPENCODE_SERVER_PASSWORD} to choose
+     *                     the password instead of reading the generated one from the server's output); applied
+     *                     after the launcher's own variables, so they take precedence
+     * @param copyHostAuth with {@code cleanRoom}, copy the host's {@code ~/.local/share/opencode/auth.json} into
+     *                     the clean room so the server can use the developer's provider logins. Off by default;
+     *                     pass credentials through {@code environment} instead
      */
     @Builder
     public OpenCodeServerLauncher(
@@ -74,8 +89,10 @@ public final class OpenCodeServerLauncher {
             int port,
             boolean cleanRoom,
             Duration startupTimeout,
-            Map<String, String> environment
+            Map<String, String> environment,
+            boolean copyHostAuth
     ) {
+        this.copyHostAuth = copyHostAuth;
         this.environment = environment == null ? Map.of() : Map.copyOf(environment);
         this.binaryPath = binaryPath != null ? binaryPath : findBinary();
         this.requestedPort = port;
@@ -99,22 +116,32 @@ public final class OpenCodeServerLauncher {
         Process process = startProcess(cleanRoomDir);
         OpenCodeServerInstance instance = awaitServerStartup(process, cleanRoomDir);
 
-        // Add shutdown hook to prevent orphaned processes
-        Runtime.getRuntime().addShutdownHook(new Thread(instance::close));
+        // One hook per instance, removed again when the instance is closed, prevents orphaned processes.
+        instance.registerShutdownHook();
 
-        waitForHealth(instance.toClient(), startupTimeout);
+        try (OpenCodeClient client = instance.toClient()) {
+            waitForHealth(client, startupTimeout);
+        } catch (InterruptedException | RuntimeException e) {
+            instance.close();
+            throw e;
+        }
 
         log.info("Launched OpenCode server on port {} (PID {})", instance.getPort(), process.pid());
         return instance;
     }
 
     private Path prepareCleanRoom() throws IOException {
-        Path directory = Files.createTempDirectory("opencode-cleanroom-");
+        Path directory = FileSystems.getDefault().supportedFileAttributeViews().contains("posix")
+                ? Files.createTempDirectory("opencode-cleanroom-",
+                        PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+                : Files.createTempDirectory("opencode-cleanroom-");
         for (String subdirectory : CLEAN_ROOM_ENV_DIRECTORIES.values()) {
             Files.createDirectories(directory.resolve(subdirectory));
         }
         Path dataDirectory = Files.createDirectories(directory.resolve(DATA_DIRECTORY).resolve(BINARY_NAME));
-        copyProviderAuth(dataDirectory);
+        if (copyHostAuth) {
+            copyProviderAuth(dataDirectory);
+        }
         return directory;
     }
 
@@ -155,7 +182,8 @@ public final class OpenCodeServerLauncher {
 
     private OpenCodeServerInstance awaitServerStartup(Process process, Path cleanRoomDir)
             throws InterruptedException {
-        StartupState state = new StartupState(requestedPort);
+        StartupState state = new StartupState(requestedPort,
+                environment.get(EnvironmentVariables.OPENCODE_SERVER_PASSWORD));
         Thread.ofVirtual().name("opencode-launcher-stdout").start(() -> readServerOutput(process, state));
 
         boolean ready = state.readyLatch.await(startupTimeout.toMillis(), TimeUnit.MILLISECONDS);
@@ -183,13 +211,16 @@ public final class OpenCodeServerLauncher {
         private final AtomicBoolean listening = new AtomicBoolean(false);
         private final CountDownLatch readyLatch = new CountDownLatch(1);
 
-        private StartupState(int requestedPort) {
+        private StartupState(int requestedPort, String presetPassword) {
             port = new AtomicInteger(requestedPort);
+            if (presetPassword != null && !presetPassword.isBlank()) {
+                password.set(presetPassword);
+            }
         }
 
         private void accept(String line) {
             Matcher passwordMatcher = PASSWORD_PATTERN.matcher(line);
-            if (passwordMatcher.find()) {
+            if (password.get() == null && passwordMatcher.find()) {
                 password.set(passwordMatcher.group(1));
             }
             Matcher portMatcher = PORT_PATTERN.matcher(line);

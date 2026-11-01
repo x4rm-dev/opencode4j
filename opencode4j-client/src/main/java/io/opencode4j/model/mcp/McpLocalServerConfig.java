@@ -25,4 +25,12 @@ public record McpLocalServerConfig(
         command = Immutable.list(command);
         environment = Immutable.map(environment);
     }
+
+    /** Environment variable names only: their values are often credentials. */
+    @Override
+    public String toString() {
+        return "McpLocalServerConfig[command=" + command + ", cwd=" + cwd + ", environment="
+                + (environment == null ? "{}" : environment.keySet()) + ", disabled=" + disabled
+                + ", codemode=" + codemode + ", timeout=" + timeout + ", protocol=" + protocol + "]";
+    }
 }

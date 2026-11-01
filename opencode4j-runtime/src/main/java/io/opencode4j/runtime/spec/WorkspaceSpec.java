@@ -33,6 +33,8 @@ import java.util.regex.Pattern;
  * @param plugins          OpenCode plugins to load; empty means none
  * @param enabledProviders if non-empty, only these providers may be used
  * @param autoCompaction   whether OpenCode compacts automatically, or {@code null} for its default
+ * @param allowInlineSecrets whether provider or MCP credentials may be written as literal values instead of
+ *                         {@link SecretRef} references; for local development only
  */
 public record WorkspaceSpec(
         String id,
@@ -47,7 +49,8 @@ public record WorkspaceSpec(
         List<PolicyRule> policies,
         List<String> plugins,
         List<String> enabledProviders,
-        Boolean autoCompaction
+        Boolean autoCompaction,
+        boolean allowInlineSecrets
 ) {
 
     private static final Pattern ID = Pattern.compile("[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*");
@@ -71,6 +74,41 @@ public record WorkspaceSpec(
         enabledProviders = enabledProviders == null ? List.of() : List.copyOf(enabledProviders);
         files.keySet().forEach(WorkspaceSpec::requireRelativePath);
         instructions.keySet().forEach(WorkspaceSpec::requireFileName);
+        ModelRefs.requireValid(model, "model");
+        ModelRefs.requireValid(smallModel, "smallModel");
+        if (!allowInlineSecrets) {
+            requireNoInlineSecrets(providers, mcpServers, rootAgent);
+        }
+    }
+
+    /** A spec without the inline-secret opt-in. */
+    public WorkspaceSpec(String id, AgentSpec rootAgent, List<ProviderSpec> providers, List<McpToolSpec> mcpServers,
+                         String model, String smallModel, Map<String, String> instructions, Map<String, String> files,
+                         List<PermissionRule> permissions, List<PolicyRule> policies, List<String> plugins,
+                         List<String> enabledProviders, Boolean autoCompaction) {
+        this(id, rootAgent, providers, mcpServers, model, smallModel, instructions, files, permissions, policies,
+                plugins, enabledProviders, autoCompaction, false);
+    }
+
+    private static void requireNoInlineSecrets(List<ProviderSpec> providers, List<McpToolSpec> mcpServers,
+                                               AgentSpec rootAgent) {
+        for (ProviderSpec provider : providers) {
+            if (provider.hasInlineSecrets()) {
+                throw new IllegalArgumentException("Provider " + provider.id() + " carries a literal credential; "
+                        + "use SecretRef.env/file, or allowInlineSecrets for local development");
+            }
+        }
+        List<McpToolSpec> servers = new ArrayList<>(mcpServers);
+        rootAgent.allAgents().forEach(agent -> agent.tools().stream()
+                .filter(McpToolSpec.class::isInstance).map(McpToolSpec.class::cast).forEach(servers::add));
+        for (McpToolSpec server : servers) {
+            boolean inline = server.headers() != null && server.headers().values().stream().anyMatch(SecretRef::isInline)
+                    || server.environment() != null && server.environment().values().stream().anyMatch(SecretRef::isInline);
+            if (inline) {
+                throw new IllegalArgumentException("MCP server " + server.name() + " has a literal header or "
+                        + "environment value; reference it as {env:NAME}, or allowInlineSecrets for local development");
+            }
+        }
     }
 
     public static Builder builder(String id, AgentSpec rootAgent) {
@@ -104,6 +142,7 @@ public record WorkspaceSpec(
         private final List<String> plugins = new ArrayList<>();
         private final List<String> enabledProviders = new ArrayList<>();
         private Boolean autoCompaction;
+        private boolean allowInlineSecrets;
 
         private Builder(String id, AgentSpec rootAgent) {
             this.id = id;
@@ -167,9 +206,15 @@ public record WorkspaceSpec(
             return this;
         }
 
+        /** Accept literal credentials in providers and MCP servers. For local development only. */
+        public Builder allowInlineSecrets(boolean allowInlineSecrets) {
+            this.allowInlineSecrets = allowInlineSecrets;
+            return this;
+        }
+
         public WorkspaceSpec build() {
             return new WorkspaceSpec(id, rootAgent, providers, mcpServers, model, smallModel, instructions, files,
-                    permissions, policies, plugins, enabledProviders, autoCompaction);
+                    permissions, policies, plugins, enabledProviders, autoCompaction, allowInlineSecrets);
         }
     }
 }

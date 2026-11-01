@@ -42,6 +42,7 @@ record WorkspaceConfiguration(
     @JsonInclude(JsonInclude.Include.NON_EMPTY)
     record ProviderOptions(
             @JsonProperty("baseURL") String baseUrl,
+            String apiKey,
             Map<String, String> headers
     ) {}
 
@@ -51,10 +52,13 @@ record WorkspaceConfiguration(
             String id,
             String name,
             @JsonProperty("tool_call") boolean toolCall,
-            boolean attachment,
             Modalities modalities,
-            Limit limit
+            Limit limit,
+            Cost cost
     ) {}
+
+    /** USD per million tokens. */
+    record Cost(double input, double output) {}
 
     record Modalities(List<String> input, List<String> output) {}
 

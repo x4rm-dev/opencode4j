@@ -5,6 +5,7 @@ import io.opencode4j.agent.runtime.workspace.LocationManager;
 import io.opencode4j.runtime.Workspace;
 import io.opencode4j.runtime.spec.WorkspaceSpec;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,12 +26,13 @@ final class OpenCodeWorkspace implements Workspace {
     private final LocationManager locationManager;
     private final boolean deleteDirectoryOnRetire;
     private final Consumer<OpenCodeWorkspace> onRetire;
+    private final Map<String, String> unavailableMcpServers;
     private final Set<OpenCodeAgentSession> sessions = ConcurrentHashMap.newKeySet();
     private boolean retired;
 
     OpenCodeWorkspace(WorkspaceSpec spec, Path directory, String contentHash, JvmMcpServer toolServer,
                       LocationManager locationManager, boolean deleteDirectoryOnRetire,
-                      Consumer<OpenCodeWorkspace> onRetire) {
+                      Consumer<OpenCodeWorkspace> onRetire, Map<String, String> unavailableMcpServers) {
         this.spec = Objects.requireNonNull(spec, "spec");
         this.directory = Objects.requireNonNull(directory, "directory");
         this.contentHash = Objects.requireNonNull(contentHash, "contentHash");
@@ -38,6 +40,12 @@ final class OpenCodeWorkspace implements Workspace {
         this.locationManager = Objects.requireNonNull(locationManager, "locationManager");
         this.deleteDirectoryOnRetire = deleteDirectoryOnRetire;
         this.onRetire = Objects.requireNonNull(onRetire, "onRetire");
+        this.unavailableMcpServers = unavailableMcpServers == null ? Map.of() : Map.copyOf(unavailableMcpServers);
+    }
+
+    /** MCP servers that had not connected when the workspace was materialized, with their status. */
+    Map<String, String> unavailableMcpServers() {
+        return unavailableMcpServers;
     }
 
     @Override

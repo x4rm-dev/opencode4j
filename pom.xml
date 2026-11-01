@@ -43,6 +43,7 @@
         <module>opencode4j-client</module>
         <module>opencode4j-agent</module>
         <module>opencode4j-guice</module>
+        <module>opencode4j-testkit</module>
         <module>opencode4j-examples</module>
     </modules>
 

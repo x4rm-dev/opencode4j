@@ -130,9 +130,19 @@ public record AgentSpec(
             return this;
         }
 
+        /**
+         * Sets the model as {@code provider/model}. The model part may contain {@code /} and {@code :}, for example
+         * {@code godric/global:LLM_GLOBAL_X}.
+         */
         public Builder model(String model) {
+            ModelRefs.requireValid(model, "model");
             this.model = model;
             return this;
+        }
+
+        /** Sets the model from its provider id and the provider's own model id. */
+        public Builder model(String providerId, String modelId) {
+            return model(providerId + "/" + modelId);
         }
 
         public Builder steps(Integer steps) {

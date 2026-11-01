@@ -41,6 +41,11 @@
             </dependency>
             <dependency>
                 <groupId>dev.x4rm.opencode4j</groupId>
+                <artifactId>opencode4j-testkit</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.x4rm.opencode4j</groupId>
                 <artifactId>opencode4j-examples</artifactId>
                 <version>${project.version}</version>
             </dependency>

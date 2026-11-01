@@ -107,6 +107,7 @@ public final class WorkspaceWriter {
         Objects.requireNonNull(rootSpec, "rootSpec");
         WorkspaceSpec legacy = WorkspaceSpec.builder("legacy", rootSpec)
                 .permissions(List.of())
+                .allowInlineSecrets(true)
                 .build();
         return write(workspaceDir, render(legacy, providers, extraMcpServers, false)).directory();
     }
@@ -217,7 +218,8 @@ public final class WorkspaceWriter {
                 .name(provider.name())
                 .options(WorkspaceConfiguration.ProviderOptions.builder()
                         .baseUrl(provider.baseUrl())
-                        .headers(provider.headers().get())
+                        .apiKey(provider.apiKey() == null ? null : provider.apiKey().render())
+                        .headers(providerHeaders(provider))
                         .build())
                 .models(toModelConfiguration(provider.models()))
                 .build()));
@@ -231,14 +233,21 @@ public final class WorkspaceWriter {
                 .id(model.id())
                 .name(model.name())
                 .toolCall(model.toolCalling())
-                .attachment(model.vision())
                 .modalities(new WorkspaceConfiguration.Modalities(
                         model.vision() ? List.of("text", "image") : List.of("text"), List.of("text")))
                 .limit(model.contextTokens() > 0 && model.outputTokens() > 0
                         ? new WorkspaceConfiguration.Limit(model.contextTokens(), model.outputTokens())
                         : null)
+                .cost(model.cost() == null ? null : new WorkspaceConfiguration.Cost(
+                        model.cost().inputPerMillion(), model.cost().outputPerMillion()))
                 .build()));
         return result;
+    }
+
+    private static Map<String, String> providerHeaders(ProviderSpec provider) {
+        Map<String, String> headers = new LinkedHashMap<>(provider.headers().get());
+        provider.headerRefs().forEach((name, value) -> headers.put(name, value.render()));
+        return headers.isEmpty() ? null : headers;
     }
 
     private WorkspaceConfiguration.Agent toAgentConfiguration(AgentSpec agent, String rootName,

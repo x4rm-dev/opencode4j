@@ -16,6 +16,7 @@ import io.opencode4j.runtime.AgentRuntime;
 import io.opencode4j.runtime.AgentSession;
 import io.opencode4j.runtime.SessionOptions;
 import io.opencode4j.runtime.Workspace;
+import io.opencode4j.runtime.WorkspaceValidation;
 import io.opencode4j.runtime.spec.AgentSpec;
 import io.opencode4j.runtime.spec.DynamicToolSpec;
 import io.opencode4j.runtime.spec.JavaMethodToolSpec;
@@ -69,6 +70,7 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
     private final boolean deleteWorkspaceOnClose;
     private final List<ProviderSpec> providers;
     private final RunRegistry runs;
+    private final WorkspaceValidator validator;
 
     @lombok.Builder(builderClassName = "Builder", builderMethodName = "")
     public OpenCodeAgentRuntime(
@@ -87,6 +89,7 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
         this.locationManager = new LocationManager(client);
         this.mapper = new ObjectMapper();
         this.runs = new RunRegistry(() -> client.eventBus().sessionTree());
+        this.validator = new WorkspaceValidator(client);
     }
 
     public static Builder builder(OpenCodeClient client) {
@@ -111,6 +114,19 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
         synchronized (materializeLock) {
             return materialize(spec, false, false);
         }
+    }
+
+    @Override
+    public WorkspaceValidation validate(Workspace workspace) {
+        return validate(workspace, WorkspaceValidator.RESTRICTED_TOOLS);
+    }
+
+    /**
+     * Like {@link #validate(Workspace)}, checking that {@code restrictedTools} are unavailable to every agent that
+     * does not allow them explicitly.
+     */
+    public WorkspaceValidation validate(Workspace workspace, Set<String> restrictedTools) {
+        return validator.validate(own(workspace), Set.copyOf(restrictedTools));
     }
 
     @Override
@@ -143,6 +159,7 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
         validateSpec(flattenAgents(spec).toList());
         WorkspaceSpec privateSpec = WorkspaceSpec.builder(privateWorkspaceId(spec.name()), spec)
                 .permissions(List.of())
+                .allowInlineSecrets(true)
                 .build();
         OpenCodeWorkspace workspace = null;
         try {
@@ -190,9 +207,10 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
                 locationManager.evictLocation(written.directory());
             }
             locationManager.warmLocation(written.directory(), agentNames, warmupTimeout);
-            locationManager.awaitMcpServers(written.directory(), mcpServerNames(spec, agents, toolServer), warmupTimeout);
+            Map<String, String> unavailableMcp = locationManager.awaitMcpServers(written.directory(),
+                    mcpServerNames(spec, agents, toolServer), warmupTimeout);
             OpenCodeWorkspace workspace = new OpenCodeWorkspace(spec, written.directory(), written.hash(), toolServer,
-                    locationManager, deleteOnRetire, retired -> workspaces.remove(retired.id(), retired));
+                    locationManager, deleteOnRetire, retired -> workspaces.remove(retired.id(), retired), unavailableMcp);
             workspaces.put(spec.id(), workspace);
             log.info("Materialized workspace {} at {} ({}{})", spec.id(), written.directory(), written.hash(),
                     written.changed() ? "" : ", unchanged");
@@ -238,7 +256,7 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
     private WorkspaceSpec withProviders(WorkspaceSpec spec) {
         return new WorkspaceSpec(spec.id(), spec.rootAgent(), providers, spec.mcpServers(), spec.model(),
                 spec.smallModel(), spec.instructions(), spec.files(), spec.permissions(), spec.policies(),
-                spec.plugins(), spec.enabledProviders(), spec.autoCompaction());
+                spec.plugins(), spec.enabledProviders(), spec.autoCompaction(), spec.allowInlineSecrets());
     }
 
     private OpenCodeAgentSession createSession(OpenCodeWorkspace workspace, SessionOptions options,
