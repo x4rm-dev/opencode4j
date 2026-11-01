@@ -20,6 +20,7 @@ import io.opencode4j.client.api.SessionApi;
 import io.opencode4j.client.api.ShellApi;
 import io.opencode4j.config.OpenCodeConfig;
 import java.time.Duration;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import okhttp3.ConnectionPool;
 import okhttp3.OkHttpClient;
@@ -58,13 +59,14 @@ public final class OpenCodeClient implements AutoCloseable {
     public OpenCodeClient(OkHttpClient http,
                           OpenCodeConfig config,
                           ObjectMapper mapper) {
-        this(http, config, mapper, false);
+        this(http, config, mapper, false, RequestHeaders.none(), ClientMetrics.noop());
     }
 
-    private OpenCodeClient(OkHttpClient http, OpenCodeConfig config, ObjectMapper mapper, boolean ownsHttpClient) {
+    private OpenCodeClient(OkHttpClient http, OpenCodeConfig config, ObjectMapper mapper, boolean ownsHttpClient,
+                           RequestHeaders requestHeaders, ClientMetrics metrics) {
         this.http = http;
         this.ownsHttpClient = ownsHttpClient;
-        this.transport = new OpenCodeTransport(http, config, mapper);
+        this.transport = new OpenCodeTransport(http, config, mapper, requestHeaders, metrics);
         this.server = new ServerApi(transport);
         this.sessions = new SessionApi(transport);
         this.prompts = new PromptApi(transport);
@@ -83,14 +85,62 @@ public final class OpenCodeClient implements AutoCloseable {
     }
 
     public static OpenCodeClient create(OpenCodeConfig config) {
-        OkHttpClient http = new OkHttpClient.Builder()
+        return builder(config).build();
+    }
+
+    public static Builder builder(OpenCodeConfig config) {
+        return new Builder(config);
+    }
+
+    private static OkHttpClient defaultHttpClient(OpenCodeConfig config) {
+        return new OkHttpClient.Builder()
                 .connectTimeout(Duration.ofMillis(config.connectTimeoutMs()))
                 .readTimeout(Duration.ZERO)
                 .writeTimeout(Duration.ZERO)
                 .connectionPool(new ConnectionPool(5, 5, TimeUnit.MINUTES))
                 .retryOnConnectionFailure(true)
                 .build();
-        return new OpenCodeClient(http, config, new ObjectMapper(), true);
+    }
+
+    /** Builder for {@link OpenCodeClient}. */
+    public static final class Builder {
+        private final OpenCodeConfig config;
+        private OkHttpClient httpClient;
+        private ObjectMapper mapper;
+        private RequestHeaders requestHeaders = RequestHeaders.none();
+        private ClientMetrics metrics = ClientMetrics.noop();
+
+        private Builder(OpenCodeConfig config) {
+            this.config = Objects.requireNonNull(config, "config");
+        }
+
+        /** Uses the caller's HTTP client, which {@link OpenCodeClient#close()} then leaves running. */
+        public Builder httpClient(OkHttpClient httpClient) {
+            this.httpClient = httpClient;
+            return this;
+        }
+
+        public Builder mapper(ObjectMapper mapper) {
+            this.mapper = mapper;
+            return this;
+        }
+
+        /** Headers added to every request, for example trace context. */
+        public Builder requestHeaders(RequestHeaders requestHeaders) {
+            this.requestHeaders = Objects.requireNonNull(requestHeaders, "requestHeaders");
+            return this;
+        }
+
+        public Builder metrics(ClientMetrics metrics) {
+            this.metrics = Objects.requireNonNull(metrics, "metrics");
+            return this;
+        }
+
+        public OpenCodeClient build() {
+            boolean owns = httpClient == null;
+            return new OpenCodeClient(owns ? defaultHttpClient(config) : httpClient, config,
+                    mapper != null ? mapper : new ObjectMapper(), owns, requestHeaders, metrics);
+        }
     }
 
     public ServerApi server() {

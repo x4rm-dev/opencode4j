@@ -130,6 +130,20 @@ class WorkspaceSpecWriterTest {
         assertEquals("allow", permission.path("skill").asText());
     }
 
+    @Test
+    void capsSubAgentNestingWithMaxDepth(@TempDir Path tempDir) throws Exception {
+        AgentSpec deep = AgentSpec.builder("boss")
+                .limits(io.opencode4j.runtime.spec.RunLimits.builder().maxDepth(3).build())
+                .subAgent(AgentSpec.builder("lead").subAgent(AgentSpec.builder("worker").build()).build())
+                .build();
+
+        Path directory = writer.write(tempDir.resolve("ws"), writer.render(
+                WorkspaceSpec.builder("deep", deep).build(), Map.of())).directory();
+
+        assertEquals(3, mapper.readTree(directory.resolve("opencode.json").toFile())
+                .path("experimental").path("subagent_depth").asInt());
+    }
+
     private static List<String> iterableNames(JsonNode node) {
         List<String> names = new java.util.ArrayList<>();
         node.fieldNames().forEachRemaining(names::add);

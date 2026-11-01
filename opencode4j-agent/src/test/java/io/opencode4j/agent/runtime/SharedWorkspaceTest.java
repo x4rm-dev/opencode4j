@@ -41,6 +41,7 @@ class SharedWorkspaceTest {
     private final AtomicInteger sessionCounter = new AtomicInteger();
     private final ObjectMapper mapper = new ObjectMapper();
     private volatile String resumedLocation = "/elsewhere";
+    private volatile String serverVersion = "2.2.0";
 
     @TempDir
     Path workspaces;
@@ -54,6 +55,9 @@ class SharedWorkspaceTest {
                 String path = request.getPath();
                 String method = request.getMethod();
                 requests.add(method + " " + path.replaceAll("\\?.*", ""));
+                if (path.startsWith("/api/info")) {
+                    return json("{\"version\":\"" + serverVersion + "\"}");
+                }
                 if (path.startsWith("/api/agent")) {
                     return json("{\"data\":[{\"id\":\"sre-debugger\"},{\"id\":\"logs-analyst\"}]}");
                 }
@@ -220,6 +224,20 @@ class SharedWorkspaceTest {
             first.result().get(3, TimeUnit.SECONDS);
             assertTrue(session.activeRun().isEmpty());
             session.close();
+        }
+    }
+
+    @Test
+    void appliesTheServerVersionPolicy() {
+        serverVersion = "2.1.4";
+        try (OpenCodeAgentRuntime warns = runtime()) {
+            assertEquals("2.1.4", warns.checkServer());
+            warns.materialize(release("rel_v1", null));
+        }
+        try (OpenCodeAgentRuntime strict = OpenCodeAgentRuntime.builder(client).baseWorkspacesDir(workspaces)
+                .versionPolicy(io.opencode4j.client.ServerCompatibility.Policy.FAIL).build()) {
+            assertThrows(io.opencode4j.client.ServerCompatibility.IncompatibleServerException.class,
+                    () -> strict.materialize(release("rel_v2", null)));
         }
     }
 

@@ -10,6 +10,7 @@ import java.util.Objects;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.LongConsumer;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -38,6 +39,7 @@ final class QueuedSubscription implements Subscription {
     private final EventSink sink;
     private final SubscriptionOptions options;
     private final Consumer<QueuedSubscription> onClose;
+    private final LongConsumer onDropped;
     private final ArrayDeque<Item> queue = new ArrayDeque<>();
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition notEmpty = lock.newCondition();
@@ -50,6 +52,12 @@ final class QueuedSubscription implements Subscription {
 
     QueuedSubscription(EventFilter filter, EventSink sink, SubscriptionOptions options,
                        Consumer<QueuedSubscription> onClose) {
+        this(filter, sink, options, onClose, dropped -> { });
+    }
+
+    QueuedSubscription(EventFilter filter, EventSink sink, SubscriptionOptions options,
+                       Consumer<QueuedSubscription> onClose, LongConsumer onDropped) {
+        this.onDropped = Objects.requireNonNull(onDropped, "onDropped");
         this.filter = Objects.requireNonNull(filter, "filter");
         this.sink = Objects.requireNonNull(sink, "sink");
         this.options = Objects.requireNonNull(options, "options");
@@ -174,17 +182,20 @@ final class QueuedSubscription implements Subscription {
     private void shedOrOverflow(EventEnvelope envelope) {
         if (removeOldestDelta()) {
             dropped++;
+            onDropped.accept(1);
             enqueue(new Event(envelope));
             return;
         }
         if (isDelta(envelope.event())) {
             // The queue holds only lifecycle events; dropping this delta loses nothing that history lacks.
             dropped++;
+            onDropped.accept(1);
             return;
         }
         log.warn("Subscription '{}' fell behind with {} lifecycle events queued; discarding them and signalling a gap",
                 options.name(), queue.size());
         dropped += queue.size();
+        onDropped.accept(queue.size());
         queue.clear();
         overflowed = true;
         long now = System.currentTimeMillis();

@@ -379,6 +379,103 @@ class OpenCodeAgentRunTest {
     }
 
     @Test
+    void redactsEventPayloadsAndTheResult() throws Exception {
+        // Given
+        configure(text("root", "token s3cr3t ok") + toolStarted("root", "c1", "lookup")
+                + toolCalled("root", "c1", "\"q\":\"s3cr3t\"")
+                + event("session.tool.success", "\"sessionID\":\"root\",\"id\":\"c1\","
+                        + "\"content\":[{\"type\":\"text\",\"text\":\"value s3cr3t\"}]")
+                + event("session.execution.succeeded", "\"sessionID\":\"root\""), false, false);
+        var options = new RunOptions(false, null, text -> text == null ? null : text.replace("s3cr3t", "****"));
+        var run = new OpenCodeAgentRun("run", "root", AgentSpec.builder("boss").build(), RunPrompt.of("hello"),
+                events::add, client, Path.of(".").toAbsolutePath(), null, options);
+
+        // When
+        run.start();
+        var result = run.result().get(3, TimeUnit.SECONDS);
+
+        // Then
+        assertEquals("token **** ok", result.text());
+        assertEquals("value ****", result.toolExecutions().getFirst().result());
+        assertFalse(result.toolExecutions().getFirst().arguments().contains("s3cr3t"));
+        assertTrue(events.stream().noneMatch(e -> e.toString().contains("s3cr3t")), events.toString());
+    }
+
+    @Test
+    void reportsASummaryOfEachFinishedRun() throws Exception {
+        // Given
+        configure(step("root", 5, 0.05) + toolStarted("root", "c1", "lookup") + toolCalled("root", "c1", "")
+                + event("session.tool.success", "\"sessionID\":\"root\",\"id\":\"c1\",\"content\":[]")
+                + event("session.execution.succeeded", "\"sessionID\":\"root\""), false, false);
+        var summaries = new CopyOnWriteArrayList<io.opencode4j.agent.runtime.observe.RunSummary>();
+        io.opencode4j.agent.runtime.observe.RuntimeMetrics metrics = new io.opencode4j.agent.runtime.observe.RuntimeMetrics() {
+            @Override
+            public void runFinished(io.opencode4j.agent.runtime.observe.RunSummary summary) {
+                summaries.add(summary);
+            }
+        };
+        var run = new OpenCodeAgentRun("run", "root", AgentSpec.builder("boss").model("p/m").build(),
+                RunPrompt.of("hello"), null, client, Path.of(".").toAbsolutePath(), null,
+                new RunOptions(false, metrics, null));
+
+        // When
+        run.start();
+        run.result().get(3, TimeUnit.SECONDS);
+
+        // Then
+        var summary = summaries.getFirst();
+        assertEquals(RunStatus.SUCCEEDED, summary.status());
+        assertEquals("boss", summary.agentName());
+        assertEquals("p/m", summary.model());
+        assertEquals(1, summary.steps());
+        assertEquals(1, summary.toolCalls());
+        assertEquals(5, summary.tokens().total());
+        assertEquals(0.05, summary.cost(), 1e-9);
+    }
+
+    @Test
+    void emitsStepStartedEvents() throws Exception {
+        configure(event("session.step.started", "\"sessionID\":\"root\",\"agent\":\"boss\","
+                + "\"model\":{\"id\":\"global:LLM_X\",\"providerID\":\"godric\"},\"assistantMessageID\":\"m1\"")
+                + event("session.execution.succeeded", "\"sessionID\":\"root\""), false, false);
+        var run = run(AgentSpec.builder("boss").build(), events::add);
+
+        run.start();
+        run.result().get(3, TimeUnit.SECONDS);
+
+        var started = events.stream().filter(io.opencode4j.runtime.event.StepStartedEvent.class::isInstance)
+                .map(io.opencode4j.runtime.event.StepStartedEvent.class::cast).findFirst().orElseThrow();
+        assertEquals("m1", started.messageId());
+        assertEquals("godric/global:LLM_X", started.model());
+    }
+
+    @Test
+    void interruptsSubAgentsBeyondTheParallelLimit() throws Exception {
+        // Given: two sub-agent sessions start while the limit is one
+        configure(event("session.created", "\"sessionID\":\"child1\",\"parentID\":\"root\",\"title\":\"a\"")
+                + event("session.created", "\"sessionID\":\"child2\",\"parentID\":\"root\",\"title\":\"b\"")
+                + event("session.execution.succeeded", "\"sessionID\":\"child1\"")
+                + event("session.created", "\"sessionID\":\"child3\",\"parentID\":\"root\",\"title\":\"c\"")
+                + event("session.execution.succeeded", "\"sessionID\":\"root\""), false, false);
+        var run = run(AgentSpec.builder("boss").limits(RunLimits.builder().maxParallelChildren(1).build()).build(),
+                events::add);
+
+        // When
+        run.start();
+        run.result().get(3, TimeUnit.SECONDS);
+
+        // Then: only child2 overlapped another running child
+        var interrupted = new java.util.ArrayList<String>();
+        RecordedRequest request;
+        while ((request = server.takeRequest(300, TimeUnit.MILLISECONDS)) != null) {
+            if (request.getPath().endsWith("/interrupt")) {
+                interrupted.add(request.getPath());
+            }
+        }
+        assertEquals(List.of("/api/session/child2/interrupt"), interrupted);
+    }
+
+    @Test
     void sendsThePromptOnlyAfterTheStreamIsLive() throws Exception {
         // Given
         configure(event("session.execution.succeeded", "\"sessionID\":\"root\""), true, false);

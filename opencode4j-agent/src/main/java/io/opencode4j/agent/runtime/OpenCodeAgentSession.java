@@ -1,6 +1,7 @@
 package io.opencode4j.agent.runtime;
 
 import io.opencode4j.agent.runtime.run.OpenCodeAgentRun;
+import io.opencode4j.agent.runtime.run.RunOptions;
 import io.opencode4j.client.OpenCodeClient;
 import io.opencode4j.runtime.AgentEventListener;
 import io.opencode4j.runtime.AgentResult;
@@ -37,6 +38,7 @@ public final class OpenCodeAgentSession implements AgentSession {
     private final RunRegistry runs;
     private final Consumer<OpenCodeAgentSession> onClosed;
     private final boolean retireWorkspaceOnClose;
+    private final RunOptions runOptions;
 
     private final Object lock = new Object();
     private OpenCodeAgentRun currentRun;
@@ -45,7 +47,8 @@ public final class OpenCodeAgentSession implements AgentSession {
 
     OpenCodeAgentSession(String sessionId, AgentSpec spec, OpenCodeClient client, OpenCodeWorkspace workspace,
                          SessionOptions options, RunRegistry runs, Consumer<OpenCodeAgentSession> onClosed,
-                         boolean retireWorkspaceOnClose) {
+                         boolean retireWorkspaceOnClose, RunOptions runOptions) {
+        this.runOptions = runOptions == null ? RunOptions.defaults() : runOptions;
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
         this.spec = Objects.requireNonNull(spec, "spec");
         this.client = Objects.requireNonNull(client, "client");
@@ -91,7 +94,7 @@ public final class OpenCodeAgentSession implements AgentSession {
             }
             String runId = "run_" + UUID.randomUUID().toString().substring(0, 12);
             run = new OpenCodeAgentRun(runId, sessionId, spec, prompt, listener, client, workspace.directory(),
-                    workspace.toolServer(), serverMayBeBusy);
+                    workspace.toolServer(), runOptions.awaitingServerIdle(serverMayBeBusy));
             currentRun = run;
         }
         if (workspace.toolServer() != null) {

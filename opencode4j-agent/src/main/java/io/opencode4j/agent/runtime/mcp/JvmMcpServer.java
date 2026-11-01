@@ -7,6 +7,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.opencode4j.agent.runtime.observe.RuntimeMetrics;
+import io.opencode4j.agent.runtime.run.RunMdc;
 import io.opencode4j.config.LocalServerDefaults;
 import io.opencode4j.runtime.media.MediaResult;
 import io.opencode4j.runtime.spec.DynamicToolSpec;
@@ -108,6 +110,7 @@ public final class JvmMcpServer implements AutoCloseable {
     private final Duration toolTimeout;
     private final ToolCallResolver resolver;
     private final ToolOutputPolicy outputPolicy;
+    private final RuntimeMetrics metrics;
     private final int invocationLogSize;
     private final Map<String, RegisteredTool> tools = new LinkedHashMap<>();
     private final List<DynamicToolProvider> dynamicProviders = new ArrayList<>();
@@ -144,7 +147,7 @@ public final class JvmMcpServer implements AutoCloseable {
             ObjectMapper mapper
     ) throws IOException {
         this(runId, toolSpecs, dynamicToolSpecs, resultSpec, mapper, null, 0, null, null, null, null, null,
-                null, null, null);
+                null, null, null, null);
     }
 
     /**
@@ -161,6 +164,7 @@ public final class JvmMcpServer implements AutoCloseable {
      * @param maxRequestBytes    rejects larger request bodies; {@link #DEFAULT_MAX_REQUEST_BYTES} by default
      * @param maxConcurrentCalls tool calls that may run at once; {@link #DEFAULT_MAX_CONCURRENT_CALLS} by default
      * @param invocationLogSize  recent invocations kept; {@link #DEFAULT_INVOCATION_LOG_SIZE} by default
+     * @param metrics            receives every tool call's duration and outcome
      */
     @Builder(builderMethodName = "builder")
     private JvmMcpServer(
@@ -178,8 +182,10 @@ public final class JvmMcpServer implements AutoCloseable {
             Duration toolTimeout,
             Integer maxRequestBytes,
             Integer maxConcurrentCalls,
-            Integer invocationLogSize
+            Integer invocationLogSize,
+            RuntimeMetrics metrics
     ) throws IOException {
+        this.metrics = metrics != null ? metrics : RuntimeMetrics.noop();
         this.serverId = serverId != null && !serverId.isBlank() ? serverId : "tools-" + UUID.randomUUID().toString().substring(0, 8);
         this.mapper = mapper != null ? mapper : new ObjectMapper();
         this.schemaGenerator = new JsonSchemaGenerator(this.mapper);
@@ -538,10 +544,11 @@ public final class JvmMcpServer implements AutoCloseable {
         }
 
         long t0 = System.currentTimeMillis();
+        long startedNanos = System.nanoTime();
         AtomicBoolean cancelled = new AtomicBoolean(false);
         activeCancellations.put(rpcId, cancelled);
 
-        try {
+        try (var mdc = RunMdc.of(caller.runId(), caller.sessionId())) {
             if (SUBMIT_RESULT.equals(toolName) && resultSpec != null) {
                 return submitResult(caller, args, result, content, t0);
             }
@@ -569,6 +576,7 @@ public final class JvmMcpServer implements AutoCloseable {
         } finally {
             activeCancellations.remove(rpcId);
             callSlots.release();
+            recordMetric(toolName, result.path("isError").asBoolean(false), System.nanoTime() - startedNanos);
         }
 
         return result;
@@ -652,6 +660,14 @@ public final class JvmMcpServer implements AutoCloseable {
         result.put("isError", true);
         content.addObject().put("type", "text").put("text", message);
         return result;
+    }
+
+    private void recordMetric(String toolName, boolean failed, long durationNanos) {
+        try {
+            metrics.toolCall(serverId, toolName, failed, durationNanos);
+        } catch (RuntimeException e) {
+            log.debug("Tool metrics failed: {}", e.toString());
+        }
     }
 
     private void recordInvocation(String toolName, String sessionId, String args, String resultText, boolean isError, long duration) {

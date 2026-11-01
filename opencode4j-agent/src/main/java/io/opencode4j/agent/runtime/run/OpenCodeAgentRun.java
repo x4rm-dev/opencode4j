@@ -62,6 +62,8 @@ public final class OpenCodeAgentRun implements AgentRun {
     private final OpenCodeClient client;
     private final JvmMcpServer jvmMcpServer;
     private final boolean awaitServerIdle;
+    private final RunOptions options;
+    private final long startedNanos = System.nanoTime();
     private final CompletableFuture<AgentResult> future = new CompletableFuture<>();
     private final RunReconciler reconciler;
 
@@ -90,6 +92,16 @@ public final class OpenCodeAgentRun implements AgentRun {
     public OpenCodeAgentRun(String runId, String rootSessionId, AgentSpec spec, RunPrompt prompt,
                             AgentEventListener listener, OpenCodeClient client, Path workspaceDir,
                             JvmMcpServer jvmMcpServer, boolean awaitServerIdle) {
+        this(runId, rootSessionId, spec, prompt, listener, client, workspaceDir, jvmMcpServer,
+                RunOptions.defaults().awaitingServerIdle(awaitServerIdle));
+    }
+
+    /** @param options server-idle wait, metrics and redaction for this run */
+    public OpenCodeAgentRun(String runId, String rootSessionId, AgentSpec spec, RunPrompt prompt,
+                            AgentEventListener listener, OpenCodeClient client, Path workspaceDir,
+                            JvmMcpServer jvmMcpServer, RunOptions options) {
+        this.options = Objects.requireNonNull(options, "options");
+        boolean awaitServerIdle = options.awaitServerIdle();
         this.runId = Objects.requireNonNull(runId, "runId");
         this.rootSessionId = Objects.requireNonNull(rootSessionId, "rootSessionId");
         this.spec = Objects.requireNonNull(spec, "spec");
@@ -100,7 +112,7 @@ public final class OpenCodeAgentRun implements AgentRun {
         this.awaitServerIdle = awaitServerIdle;
         this.reconciler = new RunReconciler(client, rootSessionId);
         eventProcessor = new RunEventProcessor(runId, rootSessionId, spec, client, listener,
-                this::isTerminal, this::onRootEnded, this::stop);
+                this::isTerminal, this::onRootEnded, this::stop, options.redactor());
     }
 
     public void start() {
@@ -114,6 +126,12 @@ public final class OpenCodeAgentRun implements AgentRun {
     }
 
     private void begin() {
+        try (var ignored = RunMdc.of(runId, rootSessionId)) {
+            beginWithContext();
+        }
+    }
+
+    private void beginWithContext() {
         synchronized (stateLock) {
             if (terminal) {
                 return;
@@ -303,7 +321,19 @@ public final class OpenCodeAgentRun implements AgentRun {
             if (closing != null) {
                 closing.close();
             }
+            report(result);
             future.complete(result);
+        }
+    }
+
+    private void report(AgentResult result) {
+        try {
+            options.metrics().runFinished(new io.opencode4j.agent.runtime.observe.RunSummary(runId, rootSessionId,
+                    spec.name(), spec.model(), result.status(), result.failureCategory(),
+                    Duration.ofNanos(System.nanoTime() - startedNanos).toMillis(), eventProcessor.usage(),
+                    eventProcessor.cost(), eventProcessor.stepCount(), eventProcessor.toolCallCount()));
+        } catch (RuntimeException e) {
+            log.debug("Run metrics failed: {}", e.toString());
         }
     }
 
@@ -378,7 +408,8 @@ public final class OpenCodeAgentRun implements AgentRun {
 
         @Override
         public void onEvent(EventEnvelope envelope) {
-            try {
+            try (var ignored = RunMdc.of(runId, envelope.event().sessionId() != null
+                    ? envelope.event().sessionId() : rootSessionId)) {
                 processEvent(envelope.event());
             } catch (RuntimeException | Error e) {
                 log.error("Event processing failed on runId {}: {}", runId, e.getMessage(), e);
@@ -388,7 +419,7 @@ public final class OpenCodeAgentRun implements AgentRun {
 
         @Override
         public void onGap(StreamGap gap) {
-            try {
+            try (var ignored = RunMdc.of(runId, rootSessionId)) {
                 reconcile(gap);
             } catch (RuntimeException e) {
                 log.warn("Reconciling run {} failed; waiting for live events: {}", runId, e.toString());

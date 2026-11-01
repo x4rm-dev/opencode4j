@@ -185,6 +185,22 @@ class SharedJvmMcpServerTest {
         assertTrue(server.invocationLog().getLast().argumentsJson().contains("\"b\""));
     }
 
+    @Test
+    void reportsEveryToolCallToMetrics() throws Exception {
+        var calls = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        server = builder(new Catalog()).metrics(new io.opencode4j.agent.runtime.observe.RuntimeMetrics() {
+            @Override
+            public void toolCall(String serverName, String tool, boolean failed, long durationNanos) {
+                calls.add(serverName + "/" + tool + (failed ? " failed" : " ok"));
+            }
+        }).build();
+
+        call("alfred_catalog_lookup", "{\"name\":\"theo\"}", "s");
+        call("broken", "{}", "s");
+
+        assertEquals(List.of("alfred/alfred_catalog_lookup ok", "alfred/broken failed"), calls);
+    }
+
     private JsonNode call(String tool, String arguments, String sessionId) throws Exception {
         String params = "{\"name\":\"" + tool + "\",\"arguments\":" + arguments
                 + ",\"_meta\":{\"ai.opencode/sessionID\":\"" + sessionId + "\"}}";

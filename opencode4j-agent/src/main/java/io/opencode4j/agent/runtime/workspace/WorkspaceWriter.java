@@ -171,7 +171,8 @@ public final class WorkspaceWriter {
             WorkspaceSpec spec, List<AgentSpec> agents, List<ProviderSpec> providers,
             Map<String, McpToolSpec> extraMcpServers, boolean workspaceDefaults) {
         val rootSpec = spec.rootAgent();
-        val depth = rootSpec.calculateDepth();
+        // RunLimits.maxDepth caps how deep sub-agents may nest; without it the tree's own depth is allowed.
+        val depth = rootSpec.limits().maxDepth() != null ? rootSpec.limits().maxDepth() : rootSpec.calculateDepth();
         val agentConfig = new LinkedHashMap<String, WorkspaceConfiguration.Agent>();
         // OpenCode lets workspace-level rules override agent rules, so a workspace-wide deny-all would hide even
         // the tools an agent allows. Workspace rules therefore lead each agent's own rules instead.

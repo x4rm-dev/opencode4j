@@ -223,9 +223,149 @@ mvn -pl opencode4j-examples compile exec:java -Dexec.mainClass="io.opencode4j.ex
 
 # 7. Multimodal prompts and media tools (analyzing images and tools returning MediaResult)
 mvn -pl opencode4j-examples compile exec:java -Dexec.mainClass="io.opencode4j.examples.MultimodalPromptExample"
+
+# 8. A read-only service agent in a shared release workspace (validation, shared tool server, slow listener)
+mvn -pl opencode4j-examples compile exec:java -Dexec.mainClass="io.opencode4j.examples.ReleaseWorkspaceExample"
 ```
 
 *(Each example automatically connects to `OPENCODE_SERVER_URL` if set, or auto-launches an isolated local server instance if unset.)*
+
+## Running opencode4j in a service
+
+The single-session `runtime().open(AgentSpec)` above writes a private workspace per session. A long-running
+service (for example a Slack bot serving many threads) should instead materialize one workspace per release of
+its agent configuration and open every conversation in it. Everything below was verified against opencode 2.2.0.
+
+### Release workspaces
+
+```java
+OpenCodeClient client = OpenCodeClient.builder(OpenCodeConfig.builder("http://127.0.0.1:4096")
+                .servePassword(System.getenv("OPENCODE_SERVER_PASSWORD")).build())
+        .metrics(clientMetrics)                  // optional, see Observability
+        .build();
+OpenCodeAgentRuntime runtime = OpenCodeAgentRuntime.builder(client)
+        .baseWorkspacesDir(Path.of("/data/workspaces"))
+        .build();
+
+// One long-lived tool server for the whole application, reached through {env:} references.
+JvmMcpServer tools = JvmMcpServer.builder()
+        .serverId("alfred").path("/mcp")
+        .port(Integer.parseInt(System.getenv("ALFRED_MCP_PORT")))
+        .token(System.getenv("ALFRED_MCP_TOKEN"))
+        .javaTools(List.of(JavaMethodToolSpec.of(new CatalogTools())))
+        .resolver(runtime.toolCallResolver())    // ToolContext then names run, root session and agent
+        .build();
+
+ProviderSpec godric = ProviderSpec.builder("godric")
+        .baseUrl("http://127.0.0.1:{env:GODRIC_GATEWAY_PORT}/v1")
+        .apiKey(SecretRef.env("GODRIC_GATEWAY_TOKEN"))
+        .model(ProviderSpec.ModelSpec.toolCalling("global:LLM_ROOT", 200_000, 32_000).withCost(0.5, 1.5))
+        .build();
+
+AgentSpec debugger = AgentSpec.builder("sre-debugger")
+        .model("godric", "global:LLM_ROOT")
+        .instruction("{file:.opencode/prompts/sre-debugger.md}")
+        .permission(PermissionRule.allow("alfred_*", "*"))
+        .permission(PermissionRule.allow("victorialogs_*", "*"))
+        .build();
+
+Workspace release = runtime.materialize(WorkspaceSpec.builder("debugging/rel_0042", debugger)
+        .provider(godric)
+        .mcpServer(tools.asMcpToolSpec("alfred", "ALFRED_MCP_PORT", "ALFRED_MCP_TOKEN"))
+        .mcpServer(McpToolSpec.remote("victorialogs", "logs", "{env:VL_MCP_URL}",
+                Map.of("Authorization", "{env:VL_MCP_AUTH}")))
+        .file(".opencode/prompts/sre-debugger.md", prompt)
+        .instruction("timezone.md", "Times are in IST unless stated otherwise.")
+        .smallModel("godric/global:LLM_SMALL")
+        .policy(PolicyRule.denyTool("shell"))
+        .enabledProvider("godric")
+        .build());
+runtime.validate(release).requireValid();       // before routing traffic to the release
+
+try (AgentSession conversation = runtime.open(release, SessionOptions.builder()
+        .title("Theo timeouts").metadata("conversationId", conversationId).build())) {
+    AgentResult result = conversation.send("Any Aerospike timeouts on Theo between 15:30 and 15:40?").await();
+}
+```
+
+- `materialize` writes the files once (content-hashed: an identical spec is a no-op), with owner-only permissions,
+  and waits until the agents are registered and the MCP servers connected. A changed spec under an id that still
+  has open sessions is rejected; publish it under a new id.
+- `close()` detaches: the server session survives and `runtime.resume(release, sessionId, options)` reattaches,
+  for example after a restart. `delete()` removes it. Nothing evicts the location until `release.retire()`.
+- A session runs one prompt at a time (`SessionBusyException` otherwise). After a cancelled turn the next run first
+  waits for the server to finish it.
+
+### Permissions are deny-by-default
+
+A `WorkspaceSpec` starts every agent's rules with `"*": "deny"`, so an agent gets only what it allows. opencode
+applies workspace-level rules after agent rules, so opencode4j places the workspace rules at the start of each
+agent's rule list instead of at the root. Tools a rule denies outright are not offered to the model at all. MCP
+tools are checked as `<server>_<tool>`. opencode normally reaches them through its `execute` tool (Code Mode);
+when `execute` is denied, as it is under deny-all, allowed MCP tools are offered to the model directly.
+`runtime.validate(...)` reads the effective rules back and reports any agent that could use `shell`, `execute`,
+`edit`, `write`, `webfetch`, `websearch` or `question` without allowing it explicitly.
+
+### Secrets
+
+Provider keys, provider headers and MCP headers are written as `{env:NAME}` / `{file:path}` references
+(`SecretRef.env(...)`, `SecretRef.file(...)`) that opencode resolves; a `WorkspaceSpec` refuses literal credentials
+unless `allowInlineSecrets(true)` is set for local development. opencode returns the *resolved* values from
+`/api/provider`, `/api/model` and `/api/config`, so the server password protects every secret: keep opencode on
+loopback (the client refuses to send its password over plain HTTP to another host unless
+`allowInsecureRemote(true)`), and never log those responses.
+
+### The event stream
+
+`client.eventBus()` holds one `/api/event` connection for all runs and routes events by session tree. Each
+subscriber has its own bounded queue and thread, so a slow consumer (say, a rate-limited chat update) delays
+only itself; under pressure text deltas are merged or shed, never lifecycle events. opencode does not replay
+events after a reconnect, so every reconnect is a gap: runs then read the session history to find out whether the
+turn ended and what the answer was. The final answer of a successful run is the last assistant step from history,
+without the narration of intermediate steps.
+
+| opencode event | `AgentEvent` |
+|---|---|
+| `session.text.delta` / `session.reasoning.delta` | `TextDeltaEvent` / `ReasoningDeltaEvent` |
+| `session.step.started` / `session.step.ended`, `session.step.failed` | `StepStartedEvent` / `StepEndedEvent` |
+| `session.tool.called` / `session.tool.success` / `session.tool.failed` | `ToolCallStartedEvent` / `ToolCallCompletedEvent` / `ToolCallFailedEvent` |
+| `subagent` tool calls | `DelegationStartedEvent` / `DelegationCompletedEvent` |
+| `permission.asked` | `PermissionRequestedEvent` |
+| `session.execution.succeeded` / `failed` / `interrupted` of the root session | `RunCompletedEvent` / `RunFailedEvent` / `RunInterruptedEvent` |
+
+### Run outcomes
+
+`AgentResult.status()` is `SUCCEEDED`, `FAILED`, `CANCELLED` (the caller cancelled) or `PARTIAL` (a budget or the
+wall-clock timeout stopped the run; text and accounting so far are kept). Failures carry a `FailureCategory`
+derived from the server's error type: `LLM_AUTH`, `LLM_RATE_LIMITED` (with `retryAfterMs`), `LLM_QUOTA`,
+`LLM_CONTEXT_OVERFLOW`, `LLM_PROVIDER`, `PERMISSION_DENIED`, `EXECUTION`, `TRANSPORT`, `SESSION_BUSY`.
+
+### Observability
+
+- `ClientMetrics` (on `OpenCodeClient.builder`): HTTP requests by route, stream state, gaps, unknown event types
+  (protocol drift), shed events. `RequestHeaders` adds headers such as `traceparent` to every request.
+- `RuntimeMetrics` (on `OpenCodeAgentRuntime.builder` and `JvmMcpServer.builder`): a `RunSummary` per run (status,
+  category, duration, tokens, cost, steps, tool calls) and every in-JVM tool call.
+- Log lines written while a run's events or tool calls are handled carry `ocRunId` and `ocSessionId` in the MDC.
+- A `TextRedactor` on the runtime builder masks event payloads and result text before they leave the runtime.
+
+All of them are plain interfaces with no-op defaults; bind them to Micrometer, Dropwizard Metrics or your logger.
+
+### Compatibility and testing
+
+opencode4j is tested against opencode `>=2.2.0 <2.3.0` (`ServerCompatibility`). The runtime checks the server
+version before its first workspace and logs a warning outside that range; `versionPolicy(FAIL)` refuses instead.
+`opencode4j-testkit` provides `OpenCodeTestServer` (a real `opencode serve` in a clean room) and `FakeLlmServer`
+(a scriptable OpenAI-compatible model) for contract tests of your own agents.
+
+### Troubleshooting
+
+- *The first turn has no MCP tools*: the MCP server was not reachable when the workspace was materialized;
+  `runtime.validate(...)` lists it under warnings. Check that the opencode process sees the `{env:}` variables.
+- *An allowed MCP tool is missing*: rules match `<server>_<tool>`, for example `alfred_*` for server `alfred`.
+- *Literal credential rejected*: pass a `SecretRef`, or `allowInlineSecrets(true)` for local development.
+- *Run ended `FAILED` with `TRANSPORT`*: the event stream could not reconnect within `sseMaxRetries`; the session
+  history still holds the outcome.
 
 ## Files, MCP servers and configuration
 
@@ -330,7 +470,8 @@ opencode4j
 ├── opencode4j-client          (HTTP/1.1 transport, SSE parser, models, config)
 │   ├── OpenCodeException
 │   ├── config.OpenCodeConfig
-│   ├── client.OpenCodeClient  (+ SseStream)
+│   ├── client.OpenCodeClient  (+ SseStream, RequestHeaders, ClientMetrics, ServerCompatibility)
+│   ├── client.event           (EventBus: shared, self-healing event stream)
 │   ├── event.SseEventParser
 │   ├── event.OpenCodeEvent    (sealed low-level event hierarchy)
 │   └── model.*                 (standalone API records)
@@ -339,19 +480,25 @@ opencode4j
 │   ├── agent.runtime.OpenCodeAgentRuntime, OpenCodeAgentSession
 │   ├── agent.runtime.run     (OpenCodeAgentRun and package-private run helpers)
 │   ├── agent.runtime.workspace (WorkspaceWriter, WorkspaceConfiguration, LocationManager)
-│   ├── agent.runtime.mcp     (JvmMcpServer, JsonSchemaGenerator)
+│   ├── agent.runtime.mcp     (JvmMcpServer, ToolCallResolver, ToolOutputPolicy, JsonSchemaGenerator)
+│   ├── agent.runtime.observe (RuntimeMetrics, RunSummary)
 │   └── agent.runtime.server  (OpenCodeServerLauncher, OpenCodeServerInstance)
 ├── opencode4j-guice           (Optional Google Guice module)
 │   └── guice.OpenCodeModule
+├── opencode4j-testkit         (OpenCodeTestServer, FakeLlmServer, and the opencode contract suite)
 └── opencode4j-examples        (Runnable examples: RunPrompt, RunAgentRuntimeExample)
 ```
 
 ## Build & test
 
 ```bash
-mvn test          # Unit tests across all modules
-mvn package       # Builds reactor jars
+mvn test                             # Unit tests, plus the contract suite when an opencode binary is installed
+mvn test -DexcludedGroups=contract   # Unit tests only
+mvn package                          # Builds reactor jars
 ```
+
+The contract suite (`opencode4j-testkit`, tag `contract`) launches the `opencode` binary from `OPENCODE_BIN` or
+the `PATH` in a clean room and drives it with a scripted model; it needs no network or credentials.
 
 ## For contributors
 

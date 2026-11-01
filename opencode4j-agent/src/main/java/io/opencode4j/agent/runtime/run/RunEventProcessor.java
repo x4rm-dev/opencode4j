@@ -3,6 +3,7 @@ package io.opencode4j.agent.runtime.run;
 import io.opencode4j.client.OpenCodeClient;
 import io.opencode4j.event.ExecutionEnded;
 import io.opencode4j.event.ExecutionStarted;
+import io.opencode4j.event.StepStarted;
 import io.opencode4j.event.OpenCodeEvent;
 import io.opencode4j.event.PermissionAsked;
 import io.opencode4j.event.ReasoningDelta;
@@ -19,6 +20,8 @@ import io.opencode4j.runtime.AgentEventListener;
 import io.opencode4j.runtime.AgentResult;
 import io.opencode4j.runtime.FailureCategory;
 import io.opencode4j.runtime.RunStatus;
+import io.opencode4j.runtime.TextRedactor;
+import io.opencode4j.runtime.event.StepStartedEvent;
 import io.opencode4j.runtime.ToolExecution;
 import io.opencode4j.runtime.event.AgentEvent;
 import io.opencode4j.runtime.event.DelegationCompletedEvent;
@@ -31,7 +34,9 @@ import io.opencode4j.runtime.event.ToolCallCompletedEvent;
 import io.opencode4j.runtime.event.ToolCallFailedEvent;
 import io.opencode4j.runtime.event.ToolCallStartedEvent;
 import io.opencode4j.runtime.spec.AgentSpec;
+import java.util.HashSet;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.BooleanSupplier;
 import lombok.extern.slf4j.Slf4j;
@@ -56,10 +61,19 @@ final class RunEventProcessor {
     private final RunAccounting accounting = new RunAccounting();
     private String reconciledText;
     private boolean rootStarted;
+    private final TextRedactor redactor;
+    private final Set<String> runningChildren = new HashSet<>();
 
     RunEventProcessor(String runId, String rootSessionId, AgentSpec spec, OpenCodeClient client,
                       AgentEventListener listener, BooleanSupplier terminal,
                       Consumer<RunEnd> rootEnded, Consumer<RunEnd> limitReached) {
+        this(runId, rootSessionId, spec, client, listener, terminal, rootEnded, limitReached, TextRedactor.none());
+    }
+
+    RunEventProcessor(String runId, String rootSessionId, AgentSpec spec, OpenCodeClient client,
+                      AgentEventListener listener, BooleanSupplier terminal,
+                      Consumer<RunEnd> rootEnded, Consumer<RunEnd> limitReached, TextRedactor redactor) {
+        this.redactor = redactor == null ? TextRedactor.none() : redactor;
         this.runId = Objects.requireNonNull(runId, "runId");
         this.rootSessionId = Objects.requireNonNull(rootSessionId, "rootSessionId");
         this.spec = Objects.requireNonNull(spec, "spec");
@@ -77,6 +91,9 @@ final class RunEventProcessor {
         }
         if (event instanceof SessionCreated created) {
             hierarchy.register(created);
+            if (hierarchy.get(created.sessionId()) != null && !rootSessionId.equals(created.sessionId())) {
+                childStarted(created.sessionId());
+            }
             return;
         }
         String sid = switch (event) {
@@ -91,6 +108,7 @@ final class RunEventProcessor {
             case PermissionAsked e -> e.sessionId();
             case ExecutionEnded e -> e.sessionId();
             case ExecutionStarted e -> e.sessionId();
+            case StepStarted e -> e.sessionId();
             default -> null;
         };
         val identity = hierarchy.get(sid);
@@ -142,8 +160,11 @@ final class RunEventProcessor {
                     rootStarted = true;
                 }
             }
+            case StepStarted e -> emit(new StepStartedEvent(runId, sid, name, path, now, e.messageId(),
+                    e.model() == null ? null : e.model().toString()));
             case ExecutionEnded e -> {
                 if (!rootSessionId.equals(sid)) {
+                    runningChildren.remove(sid);
                     return;
                 }
                 if (!rootStarted) {
@@ -177,17 +198,55 @@ final class RunEventProcessor {
         boolean success = end.status() == RunStatus.SUCCEEDED;
         return AgentResult.builder(runId, rootSessionId)
                 .status(end.status()).failureCategory(end.category()).retryAfterMs(end.retryAfterMs())
-                .text(text()).errorMessage(success ? null : end.reason())
+                .text(redactor.redact(text())).errorMessage(success ? null : redactor.redact(end.reason()))
                 .typedResult(typedResult)
                 .truncated(success && maxSteps != null && accounting.rootSteps >= maxSteps)
                 .tokenUsage(accounting.usage).totalCost(accounting.cost)
-                .toolExecutions(accounting.tools).steps(accounting.steps).build();
+                .toolExecutions(accounting.tools.stream().map(tool -> new ToolExecution(tool.callId(), tool.toolName(),
+                        tool.agentPath(), redactor.redact(tool.arguments()), redactor.redact(tool.result()),
+                        tool.isError(), tool.durationMs())).toList())
+                .steps(accounting.steps).build();
+    }
+
+    /** Enforces {@code RunLimits.maxParallelChildren} by interrupting a child that exceeds it. */
+    private void childStarted(String childSessionId) {
+        runningChildren.add(childSessionId);
+        Integer limit = spec.limits().maxParallelChildren();
+        if (limit != null && limit > 0 && runningChildren.size() > limit) {
+            log.warn("Run {} has {} sub-agent sessions running, above the limit of {}; interrupting {}",
+                    runId, runningChildren.size(), limit, childSessionId);
+            runningChildren.remove(childSessionId);
+            Thread.ofVirtual().name("opencode-child-limit").start(() -> {
+                try {
+                    client.sessions().interrupt(childSessionId);
+                } catch (RuntimeException e) {
+                    log.warn("Could not interrupt sub-agent session {}: {}", childSessionId, e.getMessage());
+                }
+            });
+        }
+    }
+
+    /** Steps and tool calls counted so far, for metrics. */
+    int stepCount() {
+        return accounting.steps.size();
+    }
+
+    int toolCallCount() {
+        return accounting.tools.size();
+    }
+
+    io.opencode4j.runtime.TokenUsage usage() {
+        return accounting.usage;
+    }
+
+    double cost() {
+        return accounting.cost;
     }
 
     void emit(AgentEvent event) {
         if (listener != null) {
             try {
-                listener.onEvent(event);
+                listener.onEvent(EventRedaction.apply(event, redactor));
             } catch (Exception e) {
                 log.warn("AgentEventListener threw an exception handling event {}: {}",
                         event.getClass().getSimpleName(), e.getMessage());

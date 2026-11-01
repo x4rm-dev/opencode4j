@@ -9,6 +9,8 @@ import io.opencode4j.event.EventEnvelope;
 import io.opencode4j.event.ServerConnected;
 import io.opencode4j.event.SseEventParser;
 import io.opencode4j.event.SseFrame;
+import io.opencode4j.event.UnknownEvent;
+import io.opencode4j.client.ClientMetrics;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Objects;
@@ -43,6 +45,7 @@ public final class OpenCodeEventBus implements EventBus {
     private final long reconnectMaxMs;
     private final int maxRetries;
     private final SessionTree tree = new SessionTree();
+    private final ClientMetrics metrics;
     private final Set<QueuedSubscription> subscriptions = ConcurrentHashMap.newKeySet();
     private final Object lifecycle = new Object();
 
@@ -61,12 +64,14 @@ public final class OpenCodeEventBus implements EventBus {
         this.reconnectBaseMs = Math.max(1, config.sseReconnectBaseDelayMs());
         this.reconnectMaxMs = Math.max(reconnectBaseMs, config.sseReconnectMaxDelayMs());
         this.maxRetries = config.sseMaxRetries();
+        this.metrics = transport.metrics();
     }
 
     @Override
     public Subscription subscribe(EventFilter filter, EventSink sink, SubscriptionOptions options) {
-        QueuedSubscription subscription = new QueuedSubscription(filter, sink,
-                options == null ? SubscriptionOptions.defaults() : options, this::unsubscribe);
+        SubscriptionOptions effective = options == null ? SubscriptionOptions.defaults() : options;
+        QueuedSubscription subscription = new QueuedSubscription(filter, sink, effective, this::unsubscribe,
+                dropped -> safely(() -> metrics.eventsDropped(effective.name(), dropped)));
         synchronized (lifecycle) {
             if (closed) {
                 throw new IllegalStateException("Event bus is closed");
@@ -108,7 +113,7 @@ public final class OpenCodeEventBus implements EventBus {
             }
             closed = true;
             stopReader();
-            state = ConnectionState.CLOSED;
+            setState(ConnectionState.CLOSED);
         }
         IllegalStateException cause = new IllegalStateException("Event bus closed");
         live.completeExceptionally(cause);
@@ -123,7 +128,7 @@ public final class OpenCodeEventBus implements EventBus {
             if (subscriptions.isEmpty() && running) {
                 stopReader();
                 if (!closed) {
-                    state = ConnectionState.IDLE;
+                    setState(ConnectionState.IDLE);
                 }
             }
         }
@@ -135,7 +140,7 @@ public final class OpenCodeEventBus implements EventBus {
         if (live.isDone()) {
             live = new CompletableFuture<>();
         }
-        state = ConnectionState.CONNECTING;
+        setState(ConnectionState.CONNECTING);
         reader = Thread.ofVirtual().name("opencode-event-reader").start(this::readLoop);
         if (!heartbeatTimeout.isZero()) {
             watchdog = Thread.ofVirtual().name("opencode-event-watchdog").start(this::watchLoop);
@@ -255,7 +260,26 @@ public final class OpenCodeEventBus implements EventBus {
         }
     }
 
+    private void setState(ConnectionState next) {
+        ConnectionState previous = state;
+        state = next;
+        if (previous != next) {
+            safely(() -> metrics.streamStateChanged(next));
+        }
+    }
+
+    private static void safely(Runnable measurement) {
+        try {
+            measurement.run();
+        } catch (RuntimeException ignored) {
+            // Metrics must never break the stream.
+        }
+    }
+
     private void dispatch(EventEnvelope envelope) {
+        if (envelope.event() instanceof UnknownEvent unknown) {
+            safely(() -> metrics.unknownEvent(unknown.type()));
+        }
         for (QueuedSubscription subscription : subscriptions) {
             try {
                 if (subscription.filter().accepts(envelope, tree)) {
@@ -268,13 +292,14 @@ public final class OpenCodeEventBus implements EventBus {
     }
 
     private void broadcastGap(StreamGap gap) {
+        safely(() -> metrics.streamGap(gap.reason()));
         for (QueuedSubscription subscription : subscriptions) {
             subscription.offerGap(gap);
         }
     }
 
     private void markLive() {
-        state = ConnectionState.LIVE;
+        setState(ConnectionState.LIVE);
         live.complete(null);
     }
 
@@ -283,7 +308,7 @@ public final class OpenCodeEventBus implements EventBus {
             if (!running) {
                 return;
             }
-            state = ConnectionState.RECONNECTING;
+            setState(ConnectionState.RECONNECTING);
             if (live.isDone()) {
                 live = new CompletableFuture<>();
             }
@@ -299,7 +324,7 @@ public final class OpenCodeEventBus implements EventBus {
                 watchdog.interrupt();
                 watchdog = null;
             }
-            state = ConnectionState.FAILED;
+            setState(ConnectionState.FAILED);
             CompletableFuture<Void> pending = live;
             pending.completeExceptionally(cause);
             // The next subscription starts a fresh connection attempt.

@@ -164,6 +164,9 @@ class OpenCodeContractTest {
         assertTrue(validation.valid(), validation.problems().toString());
         assertTrue(validation.warnings().isEmpty(), validation.warnings().toString());
         assertTrue(runtime.materialize(release()) == workspace, "an identical spec is not rewritten");
+        String version = runtime.checkServer();
+        assertTrue(io.opencode4j.client.ServerCompatibility.supports(version),
+                "the installed server " + version + " is in the tested range");
     }
 
     @Test

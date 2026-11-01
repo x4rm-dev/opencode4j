@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.Locale;
+import java.util.Map;
 import okhttp3.Call;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -40,8 +41,17 @@ public final class OpenCodeTransport {
     private final EnvelopeCodec envelopeCodec;
     private final HttpErrorMapper errorMapper;
     private final String authHeader;
+    private final RequestHeaders requestHeaders;
+    private final ClientMetrics metrics;
 
     public OpenCodeTransport(OkHttpClient httpClient, OpenCodeConfig config, ObjectMapper mapper) {
+        this(httpClient, config, mapper, RequestHeaders.none(), ClientMetrics.noop());
+    }
+
+    public OpenCodeTransport(OkHttpClient httpClient, OpenCodeConfig config, ObjectMapper mapper,
+                             RequestHeaders requestHeaders, ClientMetrics metrics) {
+        this.requestHeaders = requestHeaders == null ? RequestHeaders.none() : requestHeaders;
+        this.metrics = metrics == null ? ClientMetrics.noop() : metrics;
         this.config = config;
         this.mapper = mapper;
         this.envelopeCodec = new EnvelopeCodec(mapper);
@@ -72,6 +82,11 @@ public final class OpenCodeTransport {
 
     public ObjectMapper mapper() {
         return mapper;
+    }
+
+    /** Where this transport reports measurements. */
+    public ClientMetrics metrics() {
+        return metrics;
     }
 
     /**
@@ -120,7 +135,10 @@ public final class OpenCodeTransport {
                 .get()
                 .build();
         String operation = HttpMethod.GET + " " + path;
+        long started = System.nanoTime();
+        int status = -1;
         try (Response response = httpClient.newCall(request).execute()) {
+            status = response.code();
             if (!response.isSuccessful()) {
                 throw errorMapper.fromResponse(operation, response);
             }
@@ -128,6 +146,8 @@ public final class OpenCodeTransport {
             return body == null ? new byte[0] : body.bytes();
         } catch (IOException exception) {
             throw errorMapper.fromIOException(operation, exception);
+        } finally {
+            record(HttpMethod.GET, path, status, started);
         }
     }
 
@@ -163,9 +183,12 @@ public final class OpenCodeTransport {
         }
         String operation = "Event stream " + path;
         Response response = null;
+        long started = System.nanoTime();
+        int status = -1;
         try {
             Call call = streamingHttpClient.newCall(builder.build());
             response = call.execute();
+            status = response.code();
             if (!response.isSuccessful()) {
                 throw errorMapper.fromResponse(operation, response);
             }
@@ -187,6 +210,7 @@ public final class OpenCodeTransport {
         } catch (IOException exception) {
             throw errorMapper.fromIOException(operation, exception);
         } finally {
+            record(HttpMethod.GET, path, status, started);
             if (response != null) {
                 response.close();
             }
@@ -240,7 +264,10 @@ public final class OpenCodeTransport {
     @SuppressWarnings("unchecked")
     private <R> R execute(Request request, String method, String path, JavaType targetType, boolean rawTree) {
         String operation = method + " " + path;
+        long started = System.nanoTime();
+        int status = -1;
         try (Response response = httpClient.newCall(request).execute()) {
+            status = response.code();
             if (!response.isSuccessful()) {
                 throw errorMapper.fromResponse(operation, response);
             }
@@ -269,12 +296,31 @@ public final class OpenCodeTransport {
                     + exception.getOriginalMessage(), exception);
         } catch (IOException exception) {
             throw errorMapper.fromIOException(operation, exception);
+        } finally {
+            record(method, path, status, started);
+        }
+    }
+
+    private void record(String method, String path, int status, long startedNanos) {
+        try {
+            metrics.httpRequest(method, HttpRoutes.template(path), status, System.nanoTime() - startedNanos);
+        } catch (RuntimeException ignored) {
+            // Metrics must never break a request.
         }
     }
 
     /** A request builder carrying the URL and credentials but no content negotiation headers. */
     private Request.Builder baseRequest(String path) {
         Request.Builder builder = new Request.Builder().url(config.baseUrl() + path);
+        Map<String, String> extra = requestHeaders.headers();
+        if (extra != null) {
+            extra.forEach((name, value) -> {
+                if (value != null && !HttpHeaders.AUTHORIZATION.equalsIgnoreCase(name)
+                        && !HttpHeaders.COOKIE.equalsIgnoreCase(name)) {
+                    builder.header(name, value);
+                }
+            });
+        }
         if (authHeader != null) {
             builder.header(HttpHeaders.AUTHORIZATION, authHeader);
         }

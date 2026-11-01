@@ -5,6 +5,9 @@ import io.opencode4j.OpenCodeException;
 import io.opencode4j.OpenCodeNotFoundException;
 import io.opencode4j.agent.runtime.mcp.JvmMcpServer;
 import io.opencode4j.agent.runtime.mcp.ToolCallResolver;
+import io.opencode4j.agent.runtime.observe.RuntimeMetrics;
+import io.opencode4j.agent.runtime.run.RunOptions;
+import io.opencode4j.client.ServerCompatibility;
 import io.opencode4j.agent.runtime.workspace.LocationManager;
 import io.opencode4j.agent.runtime.workspace.WorkspaceWriter;
 import io.opencode4j.client.OpenCodeClient;
@@ -15,6 +18,7 @@ import io.opencode4j.model.Session;
 import io.opencode4j.runtime.AgentRuntime;
 import io.opencode4j.runtime.AgentSession;
 import io.opencode4j.runtime.SessionOptions;
+import io.opencode4j.runtime.TextRedactor;
 import io.opencode4j.runtime.Workspace;
 import io.opencode4j.runtime.WorkspaceValidation;
 import io.opencode4j.runtime.spec.AgentSpec;
@@ -35,6 +39,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import lombok.extern.slf4j.Slf4j;
@@ -71,6 +76,10 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
     private final List<ProviderSpec> providers;
     private final RunRegistry runs;
     private final WorkspaceValidator validator;
+    private final RuntimeMetrics metrics;
+    private final TextRedactor redactor;
+    private final ServerCompatibility.Policy versionPolicy;
+    private final AtomicBoolean serverChecked = new AtomicBoolean();
 
     @lombok.Builder(builderClassName = "Builder", builderMethodName = "")
     public OpenCodeAgentRuntime(
@@ -78,8 +87,14 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
             Path baseWorkspacesDir,
             Duration warmupTimeout,
             boolean deleteWorkspaceOnClose,
-            List<ProviderSpec> providers
+            List<ProviderSpec> providers,
+            RuntimeMetrics metrics,
+            TextRedactor redactor,
+            ServerCompatibility.Policy versionPolicy
     ) {
+        this.metrics = metrics != null ? metrics : RuntimeMetrics.noop();
+        this.redactor = redactor != null ? redactor : TextRedactor.none();
+        this.versionPolicy = versionPolicy != null ? versionPolicy : ServerCompatibility.Policy.WARN;
         this.client = Objects.requireNonNull(client, "client");
         this.baseWorkspacesDir = baseWorkspacesDir != null ? baseWorkspacesDir : defaultTempDir();
         this.warmupTimeout = warmupTimeout != null ? warmupTimeout : DEFAULT_WARMUP_TIMEOUT;
@@ -108,9 +123,49 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
         return runs;
     }
 
+    /**
+     * Checks once that the server version is in {@link ServerCompatibility#range()}, applying the configured
+     * {@link ServerCompatibility.Policy}; runs automatically before the first workspace is materialized.
+     *
+     * @return the server version, or {@code null} if it could not be read
+     * @throws ServerCompatibility.IncompatibleServerException under {@code FAIL} for an untested version
+     */
+    public String checkServer() {
+        if (versionPolicy == ServerCompatibility.Policy.IGNORE) {
+            return null;
+        }
+        String version;
+        try {
+            var info = client.server().info();
+            version = info == null ? null : info.version();
+        } catch (OpenCodeException e) {
+            log.warn("Could not read the OpenCode server version: {}", e.getMessage());
+            return null;
+        }
+        if (version != null && !ServerCompatibility.supports(version)) {
+            if (versionPolicy == ServerCompatibility.Policy.FAIL) {
+                throw new ServerCompatibility.IncompatibleServerException(version);
+            }
+            log.warn("OpenCode server {} is outside the tested range {}", version, ServerCompatibility.range());
+        }
+        return version;
+    }
+
+    private void checkServerOnce() {
+        if (serverChecked.compareAndSet(false, true)) {
+            try {
+                checkServer();
+            } catch (RuntimeException e) {
+                serverChecked.set(false);
+                throw e;
+            }
+        }
+    }
+
     @Override
     public Workspace materialize(WorkspaceSpec spec) {
         Objects.requireNonNull(spec, "spec");
+        checkServerOnce();
         synchronized (materializeLock) {
             return materialize(spec, false, false);
         }
@@ -157,6 +212,7 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
     public AgentSession open(AgentSpec spec) {
         Objects.requireNonNull(spec, "spec");
         validateSpec(flattenAgents(spec).toList());
+        checkServerOnce();
         WorkspaceSpec privateSpec = WorkspaceSpec.builder(privateWorkspaceId(spec.name()), spec)
                 .permissions(List.of())
                 .allowInlineSecrets(true)
@@ -277,7 +333,8 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
     private OpenCodeAgentSession attach(OpenCodeWorkspace workspace, String sessionId, SessionOptions options,
                                         boolean privateWorkspace) {
         OpenCodeAgentSession session = new OpenCodeAgentSession(sessionId, workspace.spec().rootAgent(), client,
-                workspace, options, runs, openSessions::remove, privateWorkspace);
+                workspace, options, runs, openSessions::remove, privateWorkspace,
+                new RunOptions(false, metrics, redactor));
         workspace.attach(session);
         openSessions.add(session);
         return session;
@@ -324,6 +381,7 @@ public final class OpenCodeAgentRuntime implements AgentRuntime {
                 .resultSpec(spec.resultSpec())
                 .mapper(mapper)
                 .resolver(runs)
+                .metrics(metrics)
                 .build();
     }
 
